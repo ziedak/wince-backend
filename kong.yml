@@ -1,0 +1,95 @@
+_format_version: '3.0'
+_transform: true
+
+# -----------------------------------------------------------------------------
+# SERVICES
+# -----------------------------------------------------------------------------
+services:
+  # --- Ingestion Service (Tracker API) ---
+  - name: ingestion-service
+    url: http://ingestion-service:3001 # your real service will listen on port 3001
+    routes:
+      - name: track-route
+        paths:
+          - /v1/track
+        strip_path: false
+        protocols:
+          - http
+          - https
+    plugins:
+      # API key authentication
+      - name: key-auth
+        config:
+          key_names:
+            - X-API-Key
+          hide_credentials: false
+      # Rate limiting per API key
+      - name: rate-limiting
+        config:
+          minute: 1000
+          hour: 10000
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: credential # per API key (consumer)
+
+  # --- Admin API (JWT protected) ---
+  - name: admin-api
+    url: http://admin-api:3008
+    routes:
+      - name: admin-route
+        paths:
+          - /v1/admin
+        strip_path: false
+        protocols:
+          - http
+          - https
+    plugins:
+      # JWT authentication (built‑in, no license needed)
+      - name: jwt
+        config:
+          secret_is_base64: false
+          claims_to_verify:
+            - exp
+          # Optional: forward claims as headers
+          header_names:
+            - X-User-ID
+            - X-User-Roles
+      # Rate limiting per JWT consumer (optional)
+      - name: rate-limiting
+        config:
+          minute: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          limit_by: consumer
+
+  # --- WebSocket Gateway (no authentication, just routing) ---
+  - name: intervention-gateway
+    url: http://intervention-gateway:3005
+    routes:
+      - name: ws-route
+        paths:
+          - /ws
+        strip_path: false
+        protocols:
+          - http # Kong handles WebSocket upgrade automatically
+          - https
+
+# -----------------------------------------------------------------------------
+# CONSUMERS & CREDENTIALS
+# -----------------------------------------------------------------------------
+consumers:
+  # Consumer for tracker API key
+  - username: tracker-store-1
+    custom_id: store-1
+    keyauth_credentials:
+      - key: 'test-api-key-123'
+
+  # Consumer for admin JWT
+  - username: admin-api
+    custom_id: admin-1
+    jwt_secrets:
+      - secret: 'your-256-bit-secret-change-me'
+        algorithm: HS256
+        key: 'admin-key'
