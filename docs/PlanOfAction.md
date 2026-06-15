@@ -57,7 +57,7 @@ Run Kong via Docker Compose (or a simple HTTP proxy for dev). Configure routes:
     GET /ws → http://host.docker.internal:3005 (Intervention Gateway)
 
 Auth for dev: bypass or mock (e.g., accept dummy API key).
-1.2 Ingestion Service (Rust)
+1.2 Ingestion Service (Rust) Done
 
     Endpoint POST /v1/track.
 
@@ -80,7 +80,23 @@ Run: cargo run (hot reload with cargo watch).
 
 1.4 Kafka Topics Creation Script
 
-    Use kafka-topics --create (or Confluent CLI) to create all topics with correct partitions.
+    Use kafka-topics --create (or Confluent CLI) to create these topics with the correct partitions:
+
+    raw.events (64 partitions, key=session_id)
+    enriched.events (64 partitions, key=session_id)
+    intervention.log (16 partitions, key=session_id)
+    notification.log (16 partitions, key=session_id)
+    dead.letters (8 partitions, key=session_id)
+    audit.log (8 partitions, key=store_id)
+
+    Example:
+
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw.events --partitions 64 --replication-factor 1
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic enriched.events --partitions 64 --replication-factor 1
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic intervention.log --partitions 16 --replication-factor 1
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic notification.log --partitions 16 --replication-factor 1
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dead.letters --partitions 8 --replication-factor 1
+    kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic audit.log --partitions 8 --replication-factor 1
 
 1.5 Analytics Consumer (Node.js)
 
@@ -91,29 +107,203 @@ Run: cargo run (hot reload with cargo watch).
 Run: bun dev:analytics-consumer
 Phase 2: Enrichment & Session (Week 3)
 2.1 Enrichment & Session Service (Node.js)
+Phase 2: Enrichment & Session Service (Week 3) – Complete Detailed Plan
+2.1 Service Architecture
+Aspect	Specification
+Language	Node.js 20+ (TypeScript)
+Runtime	Bun (for dev), Node.js (for production)
+Kafka consumer group	enrichment-group
+Topics	Consumes raw.events (64 partitions). Produces enriched.events (64 partitions).
+Cooperative rebalancing	Yes – use CooperativeStickyAssignor
+Idempotency	Redis Bloom filter (idem:bloom) + PostgreSQL processed_events table (fallback)
+Concurrency	Process events in batches, max 500 per poll
+Offset commit	Manual commit after successful batch processing (at‑least‑once semantics)
+2.2 Missing Details to Add
+🔴 Kafka Consumer Configuration (not specified)
+typescript
 
-    Kafka consumer for raw.events (group enrichment-group, 64 partitions, cooperative rebalancing).
+// consumer options
+{
+  groupId: 'enrichment-group',
+  sessionTimeout: 30000,
+  heartbeatInterval: 3000,
+  maxPollInterval: 300000,
+  maxPollRecords: 500,
+  autoCommit: false,
+  partitionAssignmentStrategy: 'CooperativeStickyAssignor'
+}
 
-    Per event:
+🔴 Error Handling & Dead Letter Queue
+Scenario	Action
+Transient DB failure (PostgreSQL/Redis timeout)	Retry processing up to 3 times with exponential backoff (100ms, 200ms, 400ms). If still failing, pause consumer for 5 seconds, then resume.
+Permanent failure (invalid schema, malformed data)	Write original event to Kafka dead.letters topic, then commit offset (skip). Do not block the partition.
+Kafka produce error (cannot write to enriched.events)	Retry 3 times with backoff. If still fails, write to dead.letters. Do not commit offset.
+Redis outage (cannot read/write session)	Log error, degrade gracefully – still produce enriched event without session data, but mark session_available: false.
+🔴 Idempotency Implementation Details
 
-        Lookup customer (PostgreSQL, cache in Redis).
+    Redis Bloom filter – already reserved with BF.RESERVE idem:bloom 0.001 6000000000.
 
-        Update session state (Redis Hash session:{session_id}).
+    Deduplication logic:
 
-        Produce enriched event to enriched.events.
+        Check event_id in Bloom filter.
 
-    Idempotency: check Redis Bloom filter; on false positive, check PostgreSQL processed_events.
+        If not present → process event.
 
-Run: bun dev:enrichment
-2.2 Redis Session State
+        If present (possible false positive), query PostgreSQL processed_events table for exact match.
 
-    Implement TTL (30 min), update on every event.
+        If duplicate → skip processing and commit offset.
 
-    Store: cart_value, rage_click_count, last_activity.
+        If not duplicate → process and add to Bloom filter.
+
+    Bloom filter management:
+
+        Periodically recreate the filter when size limit approaches (use BF.INFO to monitor).
+
+        Store a timestamp of last rebuild; have a fallback mechanism.
+
+🔴 Session State Management – Detailed
+Key Pattern	Data Structure	TTL	Update Rules
+session:{session_id}	Hash	30 min (renewed on each event)	Fields: cart_value (incremental), rage_click_count (incremental), last_activity (timestamp), items (JSON array, optional).
+Sliding window for rage clicks	Keep array of timestamps (max 10) in session hash.	-	On rage_click event, append timestamp; remove older than 30 seconds. Count length for is_frustrated.
+🔴 PostgreSQL Queries & Caching
+
+    Customer lookup: SELECT id, email, lifetime_value, email_consent, sms_consent FROM customers WHERE store_id = $1 AND distinct_id = $2.
+
+    Cache in Redis: key cache:customer:{store_id}:{distinct_id} with TTL 5 minutes.
+
+    Create new anonymous customer on first visit (if not found):
+    sql
+
+INSERT INTO customers (store_id, distinct_id, created_at)
+VALUES ($1, $2, NOW())
+ON CONFLICT (store_id, distinct_id) DO NOTHING
+RETURNING id;
+
+🔴 Batch Processing & Commit Strategy
+
+    Read up to 500 events from Kafka.
+
+    Process each event in sequence (to preserve order per partition).
+
+    Accumulate all successful events into a processedOffsets set.
+
+    After the batch is fully processed (or after a timeout of 5 seconds), commit the highest offset of the batch.
+
+    If any event fails permanently (moved to DLQ), commit offset anyway (skip). If transient failure, do not commit.
+
+🔴 Observability & Metrics
+
+Export to Prometheus:
+Metric	Type	Labels
+enrichment_events_processed_total	Counter	status (success/dropped/deduplicated)
+enrichment_processing_latency_seconds	Histogram	–
+enrichment_db_query_latency_seconds	Histogram	operation (customer_lookup, session_update)
+enrichment_kafka_lag	Gauge	partition
+enrichment_redis_bloom_false_positive	Counter	–
+🔴 Health Checks & Kubernetes Probes
+
+    Liveness probe (HTTP /live): returns 200 if the process is running.
+
+    Readiness probe (HTTP /ready): returns 200 only when:
+
+        Kafka consumer has successfully subscribed and joined the group.
+
+        PostgreSQL and Redis connections are alive.
+
+        The service is not in a backoff/paused state.
+
+🔴 Graceful Shutdown
+
+    Listen for SIGTERM (Kubernetes) and SIGINT (local).
+
+    Pause Kafka consumer (stop fetching new messages).
+
+    Wait for current batch to finish processing (timeout 30 seconds).
+
+    Commit final offsets.
+
+    Close database connections and Redis client.
+
+    Exit.
+
+🔴 Configuration Environment Variables
+env
+
+KAFKA_BROKERS=kafka:29092
+KAFKA_RAW_TOPIC=raw.events
+KAFKA_ENRICHED_TOPIC=enriched.events
+KAFKA_CONSUMER_GROUP=enrichment-group
+REDIS_URL=redis://redis:6379
+POSTGRES_PGBOUNCER=postgres://admin:password@pgbouncer:6432/app_db
+BLOOM_FILTER_KEY=idem:bloom
+SESSION_TTL_SECONDS=1800
+MAX_POLL_RECORDS=500
+COMMIT_INTERVAL_MS=5000
+
+🔴 Testing Strategy
+Test Type	Scope
+Unit tests	Session update logic, idempotency check, customer lookup formatting.
+Integration tests	Local Kafka + PostgreSQL + Redis (using Docker Compose). Send an event, verify it lands in enriched.events and session state is updated.
+End‑to‑end	Full pipeline: tracker → ingestion → enrichment → ClickHouse.
+Chaos	Kill Redis during processing – verify service continues (degraded), recovers after restart.
+🔴 Deployment (Non‑Kubernetes for Dev)
+
+    Development: bun dev:enrichment (uses .env for configuration).
+
+    Production (Docker): Use Dockerfile that runs node dist/main.js. Set replicas=3, resource limits=2 CPU / 4 GiB, HPA based on Kafka lag.
+
+Revised Phase 2 Plan – What to Add to Your Document
+
+Replace your existing 2.1, 2.2, 2.3 with the following expanded checklist:
+2.1 Enrichment & Session Service – Complete Implementation Checklist
+
+    Kafka consumer setup with cooperative rebalancing, manual commit, 500 max poll records.
+
+    Idempotency using Redis Bloom filter + PostgreSQL fallback.
+
+    Customer lookup with Redis cache (TTL 5m) and anonymous creation.
+
+    Session state in Redis Hash, TTL 30m, storing cart_value, rage_click_count, last_activity.
+
+    Sliding window for rage clicks (store timestamps, recompute on each event).
+
+    Error handling with retries (3 attempts, exponential backoff) and dead letter queue.
+
+    Batch offset commit after successful processing of each batch (or every 5 seconds).
+
+    Prometheus metrics (processed events, latency, Kafka lag, Bloom false positives).
+
+    Health checks (/live, /ready) for Kubernetes.
+
+    Graceful shutdown (SIGTERM) – pause consumer, finish current batch, commit offsets, close connections.
+
+    Configuration via environment variables.
+
+    Unit and integration tests (with testcontainers for Kafka/Redis/Postgres).
+
+    Dockerfile for production.
+
+    Kubernetes Deployment (replicas: 3, HPA based on lag).
+
+2.2 Redis Session State – Implementation Details
+
+    Use Redis Hash commands: HSET, HINCRBY, HGETALL, HEXPIRE.
+
+    On add_to_cart: HINCRBY session:{id} cart_value <amount>.
+
+    On rage_click: HINCRBY session:{id} rage_click_count 1.
+
+    Update last_activity on every event.
+
+    For sliding window: maintain a Redis List of timestamps, LPUSH, LTRIM, LLEN after filtering by age.
 
 2.3 PgBouncer Integration
 
-    Connect all Node.js services through PgBouncer on port 6432 (already in docker-compose).
+    Already defined in docker-compose.yml. Use port 6432.
+
+    Configure connection pool size: pool_size=50 in PgBouncer config.
+
+    Ensure all Node.js services use the PgBouncer endpoint (not direct PostgreSQL).
 
 Phase 3: Decision Engine & Intervention (Week 4‑5)
 3.1 Decision Engine (Node.js + embedded ONNX)

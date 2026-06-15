@@ -4,30 +4,43 @@
   "license": "MIT",
   "scripts": {},
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
   "devDependencies": {
     "@eslint/js": "^9.8.0",
     "@monodon/rust": "^3.0.0",
+    "@nx/esbuild": "22.7.5",
     "@nx/eslint": "22.7.5",
     "@nx/eslint-plugin": "22.7.5",
+    "@nx/jest": "22.7.5",
     "@nx/js": "22.7.5",
+    "@nx/node": "^22.7.5",
     "@nx/vite": "22.7.5",
     "@nx/vitest": "22.7.5",
     "@nx/web": "^22.7.5",
     "@swc-node/register": "1.11.1",
     "@swc/core": "1.15.8",
     "@swc/helpers": "0.5.18",
+    "@swc/jest": "~0.2.38",
+    "@types/jest": "~30.0.0",
     "@types/node": "20.19.9",
     "@vitest/coverage-v8": "~4.1.0",
     "@vitest/ui": "~4.1.0",
     "ajv": "^8.0.0",
+    "esbuild": "^0.27.0",
     "eslint": "^9.8.0",
     "eslint-config-prettier": "^10.0.0",
+    "jest": "~30.3.0",
+    "jest-environment-node": "~30.3.0",
+    "jest-util": "~30.3.0",
     "jiti": "2.4.2",
     "jsdom": "^27.1.0",
     "jsonc-eslint-parser": "^2.1.0",
     "nx": "22.7.5",
     "prettier": "^3.8.1",
+    "ts-jest": "^29.4.0",
+    "ts-node": "10.9.1",
     "tslib": "^2.3.0",
     "typescript": "~5.9.2",
     "typescript-eslint": "^8.40.0",
@@ -38,5 +51,6 @@
   "workspaces": [
     "packages/*",
     "apps/*"
+ 
   ]
 }

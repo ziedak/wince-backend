@@ -20,6 +20,30 @@
     },
     {
       "path": "./packages/types"
+    },
+    {
+      "path": "./packages/utils"
+    },
+    {
+      "path": "./apps/analytics-consumer-e2e"
+    },
+    {
+      "path": "./apps/analytics-consumer"
+    },
+    {
+      "path": "./packages/cache"
+    },
+    {
+      "path": "./packages/monitoring"
+    },
+    {
+      "path": "./packages/db"
+    },
+    {
+      "path": "./packages/db/apps/enrichment-session-e2e"
+    },
+    {
+      "path": "./packages/db/apps/enrichment-session"
     }
   ]
 }

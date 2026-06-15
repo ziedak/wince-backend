@@ -7,7 +7,7 @@ _transform: true
 services:
   # --- Ingestion Service (Tracker API) ---
   - name: ingestion-service
-    url: http://ingestion-service:3001 # your real service will listen on port 3001
+    url: http://ingestion:3001 # docker-compose service name
     routes:
       - name: track-route
         paths:
@@ -32,6 +32,18 @@ services:
           redis_host: redis
           redis_port: 6379
           limit_by: credential # per API key (consumer)
+
+  # --- Ingestion Readiness Probe (no auth) ---
+  - name: ingestion-readiness
+    url: http://ingestion:3001
+    routes:
+      - name: readiness-route
+        paths:
+          - /v1/ready
+        strip_path: false
+        protocols:
+          - http
+          - https
 
   # --- Admin API (JWT protected) ---
   - name: admin-api

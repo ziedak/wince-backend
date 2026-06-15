@@ -49,3 +49,4 @@ Thumbs.db
 .nx/self-healing
 vite.config.*.timestamp*
 vitest.config.*.timestamp*
+test-output

@@ -16,6 +16,9 @@
     }
   },
   "dependencies": {
-    "ioredis": "^5.0.0"
+    "ioredis": "^5.0.0",
+    "@org/monitoring": "workspace:*",
+    "@org/utils": "workspace:*",
+    "@org/logger": "workspace:*"
   }
 }

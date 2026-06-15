@@ -22,17 +22,20 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[tokio::main]
 async fn main() {
-    // ─── Tracing ──────────────────────────────────────────────────────────────
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer().json())
-        .init();
-
     // ─── Config ───────────────────────────────────────────────────────────────
     let config = config::AppConfig::init_from_env().unwrap_or_else(|e| {
-        error!("Configuration error: {e}");
+        eprintln!("Configuration error: {e}");
         std::process::exit(1);
     });
+
+    // ─── Tracing ──────────────────────────────────────────────────────────────
+    let filter = EnvFilter::try_new(config.log_level.clone())
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().json())
+        .init();
 
     info!(port = config.port, brokers = %config.kafka_hosts, "Starting ingestion service");
 
@@ -58,6 +61,7 @@ async fn main() {
         producer: Arc::new(producer),
         redis: Arc::new(redis_client),
     };
+    let port = state.config.port;
 
     // ─── Router ───────────────────────────────────────────────────────────────
     let app = Router::new()
@@ -68,7 +72,7 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], state.config.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
         error!("Failed to bind to {addr}: {e}");
         std::process::exit(1);

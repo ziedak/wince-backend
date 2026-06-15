@@ -60,8 +60,8 @@ impl HealthHandle {
 }
 
 /// GET /live — always 200; the process is alive.
-pub async fn liveness_handler() -> StatusCode {
-    StatusCode::OK
+pub async fn liveness_handler() -> &'static str {
+    "ok"
 }
 
 /// GET /ready — 200 only when Kafka is connected and not shutting down.
@@ -73,5 +73,5 @@ pub async fn readiness_handler() -> Response {
     if !KAFKA_HEALTHY.load(Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "kafka not ready").into_response();
     }
-    StatusCode::OK.into_response()
+    (StatusCode::OK, "ready").into_response()
 }

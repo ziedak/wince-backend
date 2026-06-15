@@ -1,4 +1,11 @@
-import { Kafka, type Producer, CompressionTypes, type Message } from 'kafkajs';
+import {
+  Kafka,
+  type Consumer,
+  CompressionTypes,
+  type EachBatchPayload,
+  type Message,
+  type Producer,
+} from 'kafkajs';
 import type { KafkaRecord } from '@org/types';
 
 export type { KafkaRecord };
@@ -18,6 +25,24 @@ export interface ProducerClient {
   isHealthy(): boolean;
   shutdown(): Promise<void>;
 }
+
+export interface KafkaConsumerOptions {
+  brokers: string[];
+  clientId: string;
+  groupId: string;
+  connectionTimeout?: number;
+  requestTimeout?: number;
+}
+
+export interface ConsumerClient {
+  connect(): Promise<void>;
+  subscribe(topic: string, fromBeginning?: boolean): Promise<void>;
+  run(options: Parameters<Consumer['run']>[0]): Promise<void>;
+  isHealthy(): boolean;
+  shutdown(): Promise<void>;
+}
+
+export type KafkaEachBatchPayload = EachBatchPayload;
 
 /**
  * Creates an idempotent KafkaJS producer.
@@ -88,6 +113,57 @@ export function createProducerClient(options: KafkaProducerOptions): ProducerCli
 
     async shutdown(): Promise<void> {
       await producer.disconnect();
+      connected = false;
+    },
+  };
+}
+
+/**
+ * Creates a KafkaJS consumer wrapper for long-running worker services.
+ */
+export function createConsumerClient(options: KafkaConsumerOptions): ConsumerClient {
+  const kafka = new Kafka({
+    brokers: options.brokers,
+    clientId: options.clientId,
+    connectionTimeout: options.connectionTimeout ?? 3000,
+    requestTimeout: options.requestTimeout ?? 30000,
+  });
+
+  const consumer: Consumer = kafka.consumer({
+    groupId: options.groupId,
+  });
+
+  let connected = false;
+  let connectError: Error | null = null;
+  const connectPromise = consumer
+    .connect()
+    .then(() => {
+      connected = true;
+    })
+    .catch((err: unknown) => {
+      connectError = err instanceof Error ? err : new Error(String(err));
+      throw connectError;
+    });
+
+  return {
+    async connect(): Promise<void> {
+      await connectPromise;
+    },
+
+    async subscribe(topic: string, fromBeginning = false): Promise<void> {
+      await consumer.subscribe({ topic, fromBeginning });
+    },
+
+    async run(options: Parameters<Consumer['run']>[0]): Promise<void> {
+      await consumer.run(options);
+    },
+
+    isHealthy(): boolean {
+      return connected && connectError === null;
+    },
+
+    async shutdown(): Promise<void> {
+      await consumer.disconnect();
       connected = false;
     },
   };
