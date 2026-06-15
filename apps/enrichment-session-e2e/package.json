@@ -13,7 +13,7 @@
           "{projectRoot}/test-output/jest/coverage"
         ],
         "options": {
-          "jestConfig": "packages/db/apps/enrichment-session-e2e/jest.config.cts",
+          "jestConfig": "apps/enrichment-session-e2e/jest.config.cts",
           "passWithNoTests": true
         },
         "dependsOn": [

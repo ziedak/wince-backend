@@ -61,6 +61,21 @@
       "name": "@org/analytics-consumer-e2e",
       "version": "0.0.1",
     },
+    "apps/enrichment-session": {
+      "name": "@org/enrichment-session",
+      "version": "0.0.1",
+      "dependencies": {
+        "@org/db": "workspace:*",
+        "@org/kafka_client": "workspace:*",
+        "@org/logger": "workspace:*",
+        "@org/monitoring": "workspace:*",
+        "@org/redis_client": "workspace:*",
+      },
+    },
+    "apps/enrichment-session-e2e": {
+      "name": "@org/enrichment-session-e2e",
+      "version": "0.0.1",
+    },
     "packages/cache": {
       "name": "@org/cache",
       "version": "0.0.1",
@@ -94,14 +109,6 @@
         "drizzle-kit": "^0.30.0",
       },
     },
-    "packages/db/apps/enrichment-session": {
-      "name": "@org/enrichment-session",
-      "version": "0.0.1",
-    },
-    "packages/db/apps/enrichment-session-e2e": {
-      "name": "@org/enrichment-session-e2e",
-      "version": "0.0.1",
-    },
     "packages/kafka_client": {
       "name": "@org/kafka_client",
       "version": "0.0.1",
@@ -131,6 +138,9 @@
       "version": "0.0.1",
       "dependencies": {
         "pg": "^8.0.0",
+      },
+      "devDependencies": {
+        "@types/pg": "^8.11.0",
       },
     },
     "packages/redis_client": {
@@ -787,9 +797,9 @@
 
     "@org/db": ["@org/db@workspace:packages/db"],
 
-    "@org/enrichment-session": ["@org/enrichment-session@workspace:packages/db/apps/enrichment-session"],
+    "@org/enrichment-session": ["@org/enrichment-session@workspace:apps/enrichment-session"],
 
-    "@org/enrichment-session-e2e": ["@org/enrichment-session-e2e@workspace:packages/db/apps/enrichment-session-e2e"],
+    "@org/enrichment-session-e2e": ["@org/enrichment-session-e2e@workspace:apps/enrichment-session-e2e"],
 
     "@org/kafka_client": ["@org/kafka_client@workspace:packages/kafka_client"],
 

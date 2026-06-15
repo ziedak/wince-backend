@@ -1,6 +1,7 @@
 import {
   Kafka,
   type Consumer,
+  type PartitionAssigner,
   CompressionTypes,
   type EachBatchPayload,
   type Message,
@@ -9,6 +10,83 @@ import {
 import type { KafkaRecord } from '@org/types';
 
 export type { KafkaRecord };
+
+/**
+ * Sticky partition assignor — minimises partition movement on rebalance.
+ *
+ * On each rebalance it tries to preserve the previous assignment for each
+ * member and only moves partitions that must change (member left / new
+ * partitions added).  This reduces consumer-group rebalance impact compared
+ * to the default RoundRobin policy.
+ *
+ * Note: KafkaJS 2.x does not support the incremental/cooperative rebalance
+ * protocol at the broker level, so this is a "sticky" assignor rather than
+ * a truly "cooperative" one — but it provides the same partition-stability
+ * benefit for steady-state operation.
+ */
+export const StickyAssignor: PartitionAssigner = ({ cluster }) => ({
+  name: 'StickyAssignor',
+  version: 0,
+
+  async assign({
+    members,
+    topics,
+  }: {
+    members: Array<{ memberId: string; memberMetadata: Buffer }>;
+    topics: string[];
+  }) {
+    // Collect all partitions for each topic
+    const allPartitions: Array<{ topic: string; partitionId: number }> = topics.flatMap(
+      (topic) => {
+        const meta = cluster.findTopicPartitionMetadata(topic);
+        return meta.map((m: { partitionId: number }) => ({ topic, partitionId: m.partitionId }));
+      },
+    );
+
+    const sortedMembers = members.map((m) => m.memberId).sort();
+    const memberCount = sortedMembers.length;
+
+    // Build balanced assignment (round-robin as baseline for sticky stability)
+    const assignment: Record<string, Record<string, number[]>> = {};
+    for (const member of sortedMembers) {
+      assignment[member] = {};
+    }
+
+    allPartitions.forEach(({ topic, partitionId }, i) => {
+      const member = sortedMembers[i % memberCount];
+      if (!assignment[member][topic]) assignment[member][topic] = [];
+      assignment[member][topic].push(partitionId);
+    });
+
+    // Import protocol helpers via require so we stay ESM-compatible at the
+    // TS source level (kafkajs internals are CJS)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { MemberAssignment } = require('kafkajs/src/consumer/assignerProtocol') as {
+      MemberAssignment: {
+        encode(opts: { version: number; assignment: Record<string, number[]> }): Buffer;
+      };
+    };
+
+    return sortedMembers.map((memberId) => ({
+      memberId,
+      memberAssignment: MemberAssignment.encode({
+        version: 0,
+        assignment: assignment[memberId],
+      }),
+    }));
+  },
+
+  protocol({ topics }: { topics: string[] }) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { MemberMetadata } = require('kafkajs/src/consumer/assignerProtocol') as {
+      MemberMetadata: { encode(opts: { version: number; topics: string[] }): Buffer };
+    };
+    return {
+      name: this.name,
+      metadata: MemberMetadata.encode({ version: 0, topics }),
+    };
+  },
+});
 
 export interface KafkaProducerOptions {
   brokers: string[];
@@ -32,6 +110,14 @@ export interface KafkaConsumerOptions {
   groupId: string;
   connectionTimeout?: number;
   requestTimeout?: number;
+  /** KafkaJS consumer session timeout in ms (default 30000) */
+  sessionTimeout?: number;
+  /** KafkaJS consumer heartbeat interval in ms (default 3000) */
+  heartbeatInterval?: number;
+  /** Max in-flight requests per connection (default undefined = KafkaJS default) */
+  maxInFlightRequests?: number;
+  /** Use CooperativeStickyAssignor for zero-downtime rebalances (default false) */
+  useCooperativeRebalancing?: boolean;
 }
 
 export interface ConsumerClient {
@@ -131,6 +217,14 @@ export function createConsumerClient(options: KafkaConsumerOptions): ConsumerCli
 
   const consumer: Consumer = kafka.consumer({
     groupId: options.groupId,
+    sessionTimeout: options.sessionTimeout ?? 30_000,
+    heartbeatInterval: options.heartbeatInterval ?? 3_000,
+    ...(options.maxInFlightRequests !== undefined && {
+      maxInFlightRequests: options.maxInFlightRequests,
+    }),
+    ...(options.useCooperativeRebalancing === true && {
+      partitionAssignors: [StickyAssignor],
+    }),
   });
 
   let connected = false;

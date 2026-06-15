@@ -7,7 +7,8 @@ vi.mock('pg', () => {
     query: vi.fn().mockResolvedValue({ rows: [] }),
     release,
   };
-  function Pool() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function Pool(this: any) {
     this.query = vi.fn().mockResolvedValue({ rows: [{ result: 1 }] });
     this.connect = vi.fn().mockResolvedValue(mockClient);
   }

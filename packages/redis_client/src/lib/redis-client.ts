@@ -727,3 +727,59 @@ export class RedisClient {
     }
   }
 }
+
+// ============================================================
+// Standalone utility functions
+// These operate on a raw ioredis instance (from RedisClient.getRedis())
+// so they can be used in isolation and tested without the full class.
+// ============================================================
+
+/** Minimal interface covering only the ioredis methods these helpers use. */
+interface RawRedis {
+  call(cmd: string, ...args: (string | number)[]): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<unknown>;
+  hset(key: string, ...fieldValues: (string | number)[]): Promise<number>;
+  hgetall(key: string): Promise<Record<string, string> | null>;
+}
+
+export async function bfExists(redis: RawRedis, filterKey: string, item: string): Promise<boolean> {
+  const result = await redis.call('BF.EXISTS', filterKey, item);
+  return result === 1;
+}
+
+export async function bfAdd(redis: RawRedis, filterKey: string, item: string): Promise<boolean> {
+  const result = await redis.call('BF.ADD', filterKey, item);
+  return result === 1;
+}
+
+export async function get<T>(redis: RawRedis, key: string): Promise<T | null> {
+  const val = await redis.get(key);
+  if (!val) return null;
+  return JSON.parse(val) as T;
+}
+
+export async function set<T>(redis: RawRedis, key: string, value: T): Promise<void> {
+  await redis.set(key, JSON.stringify(value));
+}
+
+export async function hset(
+  redis: RawRedis,
+  key: string,
+  fields: Record<string, string | number>,
+): Promise<void> {
+  const args: (string | number)[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    args.push(k, v);
+  }
+  await redis.hset(key, ...args);
+}
+
+export async function hgetall<T = Record<string, string>>(
+  redis: RawRedis,
+  key: string,
+): Promise<T | null> {
+  const result = await redis.hgetall(key);
+  if (!result || Object.keys(result).length === 0) return null;
+  return result as T;
+}

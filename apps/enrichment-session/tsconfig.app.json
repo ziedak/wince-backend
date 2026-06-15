@@ -17,5 +17,22 @@
     "eslint.config.js",
     "eslint.config.cjs",
     "eslint.config.mjs"
+  ],
+  "references": [
+    {
+      "path": "../../packages/redis_client/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/monitoring/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/logger/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/kafka_client/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/db/tsconfig.lib.json"
+    }
   ]
 }

@@ -12,15 +12,15 @@
         "defaultConfiguration": "production",
         "options": {
           "platform": "node",
-          "outputPath": "packages/db/apps/enrichment-session/dist",
+          "outputPath": "apps/enrichment-session/dist",
           "format": [
             "cjs"
           ],
           "bundle": false,
-          "main": "packages/db/apps/enrichment-session/src/main.ts",
-          "tsConfig": "packages/db/apps/enrichment-session/tsconfig.app.json",
+          "main": "apps/enrichment-session/src/main.ts",
+          "tsConfig": "apps/enrichment-session/tsconfig.app.json",
           "assets": [
-            "packages/db/apps/enrichment-session/src/assets"
+            "apps/enrichment-session/src/assets"
           ],
           "esbuildOptions": {
             "sourcemap": true,
@@ -48,8 +48,8 @@
         "cache": true,
         "executor": "@nx/js:prune-lockfile",
         "outputs": [
-          "{workspaceRoot}/packages/db/apps/enrichment-session/dist/package.json",
-          "{workspaceRoot}/packages/db/apps/enrichment-session/dist/bun.lock"
+          "{workspaceRoot}/apps/enrichment-session/dist/package.json",
+          "{workspaceRoot}/apps/enrichment-session/dist/bun.lock"
         ],
         "options": {
           "buildTarget": "build"
@@ -61,7 +61,7 @@
         ],
         "cache": true,
         "outputs": [
-          "{workspaceRoot}/packages/db/apps/enrichment-session/dist/workspace_modules"
+          "{workspaceRoot}/apps/enrichment-session/dist/workspace_modules"
         ],
         "executor": "@nx/js:copy-workspace-modules",
         "options": {
@@ -102,5 +102,11 @@
       }
     }
   },
-  "dependencies": {}
+  "dependencies": {
+    "@org/db": "workspace:*",
+    "@org/kafka_client": "workspace:*",
+    "@org/logger": "workspace:*",
+    "@org/monitoring": "workspace:*",
+    "@org/redis_client": "workspace:*"
+  }
 }

@@ -2,6 +2,8 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema/index.js';
 
+export type { Pool };
+
 export interface DbOptions {
   connectionString: string;
   max?: number;

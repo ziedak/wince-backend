@@ -40,10 +40,10 @@
       "path": "./packages/db"
     },
     {
-      "path": "./packages/db/apps/enrichment-session-e2e"
+      "path": "./apps/enrichment-session"
     },
     {
-      "path": "./packages/db/apps/enrichment-session"
+      "path": "./apps/enrichment-session-e2e"
     }
   ]
 }

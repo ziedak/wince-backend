@@ -6,7 +6,8 @@ vi.mock('kafkajs', () => {
   const sendBatch = vi.fn().mockResolvedValue(undefined);
   const disconnect = vi.fn().mockResolvedValue(undefined);
   const connect = vi.fn().mockResolvedValue(undefined);
-  function Kafka() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function Kafka(this: any) {
     this.producer = function () {
       return { connect, send, sendBatch, disconnect };
     };
