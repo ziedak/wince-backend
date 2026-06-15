@@ -2,7 +2,7 @@
 [workspace]
 resolver = '2'
 members = [
-	'packages/ingestion',
+	'apps/ingestion',
 ]
 
 [profile.release]

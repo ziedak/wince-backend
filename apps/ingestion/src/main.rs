@@ -36,7 +36,8 @@ async fn main() {
 
     info!(port = config.port, brokers = %config.kafka_hosts, "Starting ingestion service");
 
-    // ─── Health handle (Kafka stats callback writes into this) ────────────────
+    // ─── Health handle ────────────────────────────────────────────────────────
+    // HealthHandle is zero-sized; it writes into the global KAFKA_HEALTHY atomic.
     let health = HealthHandle::new();
 
     // ─── Kafka producer ───────────────────────────────────────────────────────
@@ -67,7 +68,7 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
+    let addr = SocketAddr::from(([0, 0, 0, 0], state.config.port));
     let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
         error!("Failed to bind to {addr}: {e}");
         std::process::exit(1);

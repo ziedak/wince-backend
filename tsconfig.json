@@ -2,5 +2,24 @@
   "extends": "./tsconfig.base.json",
   "compileOnSave": false,
   "files": [],
-  "references": []
+  "references": [
+    {
+      "path": "./packages/redis_client"
+    },
+    {
+      "path": "./packages/kafka_client"
+    },
+    {
+      "path": "./packages/postgre_client"
+    },
+    {
+      "path": "./packages/logger"
+    },
+    {
+      "path": "./packages/clickhouse_client"
+    },
+    {
+      "path": "./packages/types"
+    }
+  ]
 }

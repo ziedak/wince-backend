@@ -2,7 +2,7 @@ This plan reflects all final decisions from the architecture review and the auth
 Phase 0: Foundation – Local Development Environment (Week 1)
 0.1 Prerequisites Done
 
-    Install Docker Desktop, Node.js 20, Rust (if writing Ingestion in Rust), pnpm.
+    Install Docker Desktop, Node.js 20, Rust (if writing Ingestion in Rust), bun.
 
     Clone repository: git clone ...
 
@@ -88,7 +88,7 @@ Run: cargo run (hot reload with cargo watch).
 
     Batch insert into ClickHouse.
 
-Run: pnpm dev:analytics-consumer
+Run: bun dev:analytics-consumer
 Phase 2: Enrichment & Session (Week 3)
 2.1 Enrichment & Session Service (Node.js)
 
@@ -104,7 +104,7 @@ Phase 2: Enrichment & Session (Week 3)
 
     Idempotency: check Redis Bloom filter; on false positive, check PostgreSQL processed_events.
 
-Run: pnpm dev:enrichment
+Run: bun dev:enrichment
 2.2 Redis Session State
 
     Implement TTL (30 min), update on every event.
@@ -138,7 +138,7 @@ Phase 3: Decision Engine & Intervention (Week 4‑5)
 
     Log to intervention.log (Kafka) and PostgreSQL.
 
-Run: pnpm dev:decision
+Run: bun dev:decision
 3.2 Intervention Gateway (uWebSockets)
 
     WebSocket server.
@@ -153,7 +153,7 @@ Run: pnpm dev:decision
 
     Graceful shutdown cleanup.
 
-Run: pnpm dev:gateway
+Run: bun dev:gateway
 3.3 Notification Service (Node.js)
 
     HTTP endpoint /v1/notify.
@@ -164,7 +164,7 @@ Run: pnpm dev:gateway
 
     Log to notification.log.
 
-Run: pnpm dev:notification
+Run: bun dev:notification
 3.4 Tracker SDK (JavaScript) – Simple Test Client
 
     HTML page with embedded tracker script.
@@ -185,7 +185,7 @@ Phase 4: Admin & Observability (Week 6)
 
     Query ClickHouse for analytics.
 
-Run: pnpm dev:admin-api
+Run: bun dev:admin-api
 4.2 Kong Admin JWT Flow (Dev Mode)
 
     Implement POST /v1/admin/login in Admin API.
