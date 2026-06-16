@@ -20,6 +20,18 @@
   ],
   "references": [
     {
+      "path": "../../packages/utils/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/redis_client/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/monitoring/tsconfig.lib.json"
+    },
+    {
+      "path": "../../packages/logger/tsconfig.lib.json"
+    },
+    {
       "path": "../../packages/kafka_client/tsconfig.lib.json"
     },
     {

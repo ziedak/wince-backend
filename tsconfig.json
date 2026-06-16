@@ -44,6 +44,9 @@
     },
     {
       "path": "./apps/enrichment-session-e2e"
+    },
+    {
+      "path": "./packages/http-client"
     }
   ]
 }

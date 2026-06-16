@@ -1,5 +1,6 @@
 import {
   Kafka,
+  type Admin,
   type Consumer,
   type PartitionAssigner,
   CompressionTypes,
@@ -124,7 +125,52 @@ export interface ConsumerClient {
   connect(): Promise<void>;
   subscribe(topic: string, fromBeginning?: boolean): Promise<void>;
   run(options: Parameters<Consumer['run']>[0]): Promise<void>;
+  /**
+   * Pause consumption on specified topic-partitions.
+   * If partitions is omitted, all partitions for the topic are paused.
+   */
+  pause(topicPartitions: Array<{ topic: string; partitions?: number[] }>): void;
+  /**
+   * Resume consumption on previously paused topic-partitions.
+   */
+  resume(topicPartitions: Array<{ topic: string; partitions?: number[] }>): void;
+  /**
+   * Seek to a specific offset for a topic-partition.
+   * Must be called after subscribe() and before run().
+   */
+  seek(topicPartition: { topic: string; partition: number; offset: string }): void;
   isHealthy(): boolean;
+  shutdown(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Admin client
+// ---------------------------------------------------------------------------
+
+export interface ConsumerGroupLag {
+  topic: string;
+  partition: number;
+  /** Last committed offset for this consumer group */
+  groupOffset: string;
+  /** High-water mark (next offset to be written by the broker) */
+  highWatermark: string;
+  /** Number of messages yet to be consumed */
+  lag: number;
+}
+
+export interface KafkaAdminOptions {
+  brokers: string[];
+  clientId: string;
+  connectionTimeout?: number;
+  requestTimeout?: number;
+}
+
+export interface AdminClient {
+  /**
+   * Fetch consumer group lag per topic-partition.
+   * lag = highWatermark - committedGroupOffset.
+   */
+  fetchConsumerGroupLag(groupId: string, topics: string[]): Promise<ConsumerGroupLag[]>;
   shutdown(): Promise<void>;
 }
 
@@ -252,6 +298,18 @@ export function createConsumerClient(options: KafkaConsumerOptions): ConsumerCli
       await consumer.run(options);
     },
 
+    pause(topicPartitions: Array<{ topic: string; partitions?: number[] }>): void {
+      consumer.pause(topicPartitions);
+    },
+
+    resume(topicPartitions: Array<{ topic: string; partitions?: number[] }>): void {
+      consumer.resume(topicPartitions);
+    },
+
+    seek(topicPartition: { topic: string; partition: number; offset: string }): void {
+      consumer.seek(topicPartition);
+    },
+
     isHealthy(): boolean {
       return connected && connectError === null;
     },
@@ -259,6 +317,75 @@ export function createConsumerClient(options: KafkaConsumerOptions): ConsumerCli
     async shutdown(): Promise<void> {
       await consumer.disconnect();
       connected = false;
+    },
+  };
+}
+
+/**
+ * Creates a KafkaJS admin client for cluster introspection.
+ * Useful for fetching consumer group lag and topic metadata.
+ */
+export function createAdminClient(options: KafkaAdminOptions): AdminClient {
+  const kafka = new Kafka({
+    brokers: options.brokers,
+    clientId: options.clientId,
+    connectionTimeout: options.connectionTimeout ?? 3000,
+    requestTimeout: options.requestTimeout ?? 30000,
+  });
+
+  const admin: Admin = kafka.admin();
+  let connected = false;
+
+  const ensureConnected = async (): Promise<void> => {
+    if (!connected) {
+      await admin.connect();
+      connected = true;
+    }
+  };
+
+  return {
+    async fetchConsumerGroupLag(
+      groupId: string,
+      topics: string[],
+    ): Promise<ConsumerGroupLag[]> {
+      await ensureConnected();
+
+      const [groupOffsets, topicHighWatermarks] = await Promise.all([
+        admin.fetchOffsets({ groupId, topics }),
+        Promise.all(topics.map((t) => admin.fetchTopicOffsets(t))),
+      ]);
+
+      // Build a map of topic:partition → high watermark
+      const highWatermarkMap = new Map<string, string>();
+      topics.forEach((topic, i) => {
+        for (const partitionInfo of topicHighWatermarks[i]) {
+          highWatermarkMap.set(`${topic}:${partitionInfo.partition}`, partitionInfo.high);
+        }
+      });
+
+      const result: ConsumerGroupLag[] = [];
+      for (const topicEntry of groupOffsets) {
+        for (const partitionEntry of topicEntry.partitions) {
+          const key = `${topicEntry.topic}:${partitionEntry.partition}`;
+          const high = highWatermarkMap.get(key) ?? '0';
+          const lag = Math.max(0, Number(high) - Number(partitionEntry.offset));
+          result.push({
+            topic: topicEntry.topic,
+            partition: partitionEntry.partition,
+            groupOffset: partitionEntry.offset,
+            highWatermark: high,
+            lag,
+          });
+        }
+      }
+      return result;
+    },
+
+    async shutdown(): Promise<void> {
+      if (connected) {
+        await admin.disconnect();
+        connected = false;
+      }
     },
   };
 }

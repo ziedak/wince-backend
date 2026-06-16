@@ -100,13 +100,29 @@ Run: cargo run (hot reload with cargo watch).
 
 1.5 Analytics Consumer (Node.js)
 
-    Consume enriched.events (first it will be empty; we will produce later).
+       Analytics Consumer (Node.js)
 
-    Batch insert into ClickHouse.
+        Kafka consumer for enriched.events (group analytics-group, manual commits, cooperative rebalancing).
+
+        Batch events (10k rows / 5s) and insert into ClickHouse via HTTP JSONEachRow.
+
+        Transform event schema to ClickHouse events table.
+
+        Exponential backoff retry (3 attempts) on ClickHouse failures; permanent errors to dead.letters.
+
+        Export Prometheus metrics (consumed events, batch size, latency, lag).
+
+        Health endpoints /live, /ready.
+
+        Graceful shutdown (SIGTERM) with final offset commit.
+
+        Configuration via environment variables.
+
+        Unit and integration tests.
 
 Run: bun dev:analytics-consumer
 Phase 2: Enrichment & Session (Week 3)
-2.1 Enrichment & Session Service (Node.js)
+2.1 Enrichment & Session Service (Node.js) Done
 Phase 2: Enrichment & Session Service (Week 3) – Complete Detailed Plan
 2.1 Service Architecture
 Aspect	Specification

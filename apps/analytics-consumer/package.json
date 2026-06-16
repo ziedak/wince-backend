@@ -103,7 +103,11 @@
     }
   },
   "dependencies": {
-    "@org/clickhouse_client": "*",
-    "@org/kafka_client": "*"
+    "@org/clickhouse_client": "workspace:*",
+    "@org/kafka_client": "workspace:*",
+    "@org/logger": "workspace:*",
+    "@org/monitoring": "workspace:*",
+    "@org/redis_client": "workspace:*",
+    "@org/utils": "workspace:*"
   }
 }
