@@ -6,7 +6,7 @@ import * as path from 'path';
 export default defineConfig(() => ({
   root: import.meta.dirname,
   cacheDir:
-    '../../../../node_modules/.vite/apps/analytics-consumer/packages/cache',
+    '../../node_modules/.vite/packages/cache',
   plugins: [
     dts({
       entryRoot: 'src',

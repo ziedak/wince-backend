@@ -45,7 +45,7 @@ export class AnalyticsConsumer {
     private readonly config: Config,
     private readonly clickhouse: ClickHouseClient,
     private readonly metrics: AnalyticsMetrics,
-    private readonly redis: RedisClient | null,
+    private readonly redis: RedisClient ,
   ) {
     this.logger = createLogger({ service: 'AnalyticsConsumer' });
   }
@@ -128,10 +128,10 @@ export class AnalyticsConsumer {
         this.logger.info({ rows: rows.length, offsets: offsets.length }, 'Batch flushed to ClickHouse');
 
         // Mark inserted event_ids in bloom filter — best-effort, never blocks commit.
-        if (this.config.enableDedup && this.redis !== null) {
+        if (this.config.enableDedup) {
           void Promise.all(
             rows.map((r) =>
-              this.redis!.bfAdd(this.config.bloomFilterKey, r.event_id).catch(() => undefined),
+              this.redis.bfAdd(this.config.bloomFilterKey, r.event_id).catch(() => undefined),
             ),
           );
         }
@@ -221,7 +221,7 @@ export class AnalyticsConsumer {
             }
 
             // ── Dedup (bloom filter) ────────────────────────────────────────
-            if (this.config.enableDedup && this.redis !== null) {
+            if (this.config.enableDedup) {
               const isDup = await this.redis
                 .bfExists(this.config.bloomFilterKey, event.event_id)
                 .catch(() => false);

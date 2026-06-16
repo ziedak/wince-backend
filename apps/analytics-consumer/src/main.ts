@@ -8,7 +8,11 @@ import { HealthServer } from './health.js';
 
 const logger = createLogger({ service: 'analytics-consumer' });
 
-function parseRedisUrl(url: string): { host: string; port: number; password?: string } {
+function parseRedisUrl(url: string): {
+  host: string;
+  port: number;
+  password?: string;
+} {
   const parsed = new URL(url);
   return {
     host: parsed.hostname,
@@ -20,7 +24,11 @@ function parseRedisUrl(url: string): { host: string; port: number; password?: st
 async function main(): Promise<void> {
   const config = loadConfig();
   logger.info(
-    { topic: config.kafkaTopic, table: config.clickhouseTable, dedup: config.enableDedup },
+    {
+      topic: config.kafkaTopic,
+      table: config.clickhouseTable,
+      dedup: config.enableDedup,
+    },
     'Starting analytics-consumer',
   );
 
@@ -34,9 +42,7 @@ async function main(): Promise<void> {
     compression: { response: true, request: false },
   });
 
-  const redis = config.enableDedup
-    ? RedisClient.create(parseRedisUrl(config.redisUrl))
-    : null;
+  const redis = RedisClient.create(parseRedisUrl(config.redisUrl));
 
   const metrics = AnalyticsMetrics.create();
   const consumer = new AnalyticsConsumer(config, clickhouse, metrics, redis);
@@ -54,15 +60,27 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     await consumer.shutdown();
     await healthServer.stop();
-    await clickhouse.disconnect().catch((err: unknown) => logger.error({ err }, 'ClickHouse disconnect error'));
+    await clickhouse
+      .disconnect()
+      .catch((err: unknown) =>
+        logger.error({ err }, 'ClickHouse disconnect error'),
+      );
     if (redis !== null) {
-      await redis.disconnect().catch((err: unknown) => logger.error({ err }, 'Redis disconnect error'));
+      await redis
+        .disconnect()
+        .catch((err: unknown) =>
+          logger.error({ err }, 'Redis disconnect error'),
+        );
     }
     process.exit(0);
   };
 
-  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
-  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
 
   await consumer.start();
 }
