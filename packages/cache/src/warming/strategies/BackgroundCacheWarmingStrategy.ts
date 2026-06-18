@@ -19,11 +19,11 @@ export class BackgroundCacheWarmingStrategy extends BaseCacheWarmingStrategy {
   private intervalId?: NodeJS.Timeout;
   private readonly intervalSeconds: number;
   private readonly maxConcurrentWarmups: number;
-  private activeWarmups: number = 0;
+  private activeWarmups = 0;
 
   constructor(
-    intervalSeconds: number = 300, // 5 minutes
-    maxConcurrentWarmups: number = 1,
+    intervalSeconds = 300, // 5 minutes
+    maxConcurrentWarmups = 1,
   ) {
     super();
     this.intervalSeconds = intervalSeconds;

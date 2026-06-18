@@ -10,15 +10,21 @@ use tracing::instrument;
 
 use crate::config::AppConfig;
 use crate::errors::AppError;
-use crate::kafka::AppProducer;
 use crate::pipeline::{process_envelope, TrackingEnvelope};
+use crate::rate_limiter::{OverflowLimiter, StoreLimiter};
+use crate::sinks::Sink;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
-    pub producer: Arc<AppProducer>,
+    /// Active event sink — KafkaSink or FallbackSink(Kafka, S3).
+    pub sink: Arc<dyn Sink>,
     /// Redis client — a new multiplexed connection is acquired per request.
     pub redis: Arc<redis::Client>,
+    /// Per-store HTTP-layer rate limiter (Phase 3).
+    pub store_limiter: Arc<StoreLimiter>,
+    /// Per-(store, anon) overflow detector (Phase 5).
+    pub overflow_limiter: Arc<OverflowLimiter>,
 }
 
 /// POST /v1/track
@@ -34,14 +40,32 @@ pub async fn track_handler(
     headers: HeaderMap,
     Json(body): Json<TrackingEnvelope>,
 ) -> Result<impl IntoResponse, AppError> {
-    // 1. Resolve store_id from Kong-injected header (Kong validated the API key)
-    let store_id = headers
-        .get("x-store-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u32>().ok())
-        .ok_or(AppError::Unauthorized)?;
+    // 1. Resolve store_id from Kong-injected header
+    let store_id = match headers.get("x-store-id") {
+        None => {
+            metrics::counter!("ingestion_auth_failures_total", "reason" => "missing_header")
+                .increment(1);
+            return Err(AppError::Unauthorized);
+        }
+        Some(v) => match v.to_str().ok().and_then(|s| s.parse::<u32>().ok()) {
+            Some(id) => id,
+            None => {
+                metrics::counter!("ingestion_auth_failures_total", "reason" => "malformed_header")
+                    .increment(1);
+                return Err(AppError::Unauthorized);
+            }
+        },
+    };
 
-    // 2. Event source (browser vs WooCommerce backend)
+    tracing::Span::current().record("store_id", store_id);
+
+    // 2. Rate limit check (Phase 3)
+    if state.store_limiter.is_limited(store_id) {
+        metrics::counter!("ingestion_rate_limited_total").increment(1);
+        return Err(AppError::RateLimited);
+    }
+
+    // 3. Event source (browser vs WooCommerce backend)
     let source = headers
         .get("x-source")
         .and_then(|v| v.to_str().ok())
@@ -52,7 +76,7 @@ pub async fn track_handler(
         .unwrap_or("browser")
         .to_string();
 
-    // 3. Client IP — Kong sets X-Real-IP or X-Forwarded-For
+    // 4. Client IP — Kong sets X-Real-IP or X-Forwarded-For
     let ip = headers
         .get("x-real-ip")
         .or_else(|| headers.get("x-forwarded-for"))
@@ -60,21 +84,22 @@ pub async fn track_handler(
         .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // 4. Acquire a Redis connection for this request
+    // 5. Acquire a Redis connection for this request
     let mut redis_conn = state
         .redis
         .get_multiplexed_async_connection()
         .await
         .map_err(AppError::from)?;
 
-    // 5. Delegate to pipeline — zero business logic in this handler
+    // 6. Delegate to pipeline
     let accepted = process_envelope(
         body,
         store_id,
         source,
         ip,
         &state.config,
-        &state.producer,
+        &state.sink,
+        &state.overflow_limiter,
         &mut redis_conn,
     )
     .await?;

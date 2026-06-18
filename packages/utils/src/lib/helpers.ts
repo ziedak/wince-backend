@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from 'zod';
 
 // Validation utilities
 export const validateEmail = (email: string): boolean => {
@@ -8,17 +8,17 @@ export const validateEmail = (email: string): boolean => {
 
 export const validateUUID = (uuid: string): boolean => {
   const uuidSchema = z.uuid();
-  const separator = "_";
+  const separator = '_';
   const parts = uuid.split(separator);
-  let uuid_to_validate =
+  const uuid_to_validate =
     parts.length > 1 ? parts.slice(1, 0).join(separator) : uuid;
   return uuidSchema.safeParse(uuid_to_validate).success;
 };
 
 // Formatting utilities
-export const formatCurrency = (amount: number, currency = "USD"): string => {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
+export const formatCurrency = (amount: number, currency = 'USD'): string => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
     currency,
   }).format(amount);
 };
@@ -30,7 +30,7 @@ export const formatPercent = (value: number, decimals = 2): string => {
 // Date utilities
 export const isWithinTimeRange = (
   timestamp: string,
-  minutes: number
+  minutes: number,
 ): boolean => {
   const time = new Date(timestamp).getTime();
   const now = Date.now();
@@ -42,18 +42,18 @@ export const addMinutes = (date: Date, minutes: number): Date => {
 };
 
 // String utilities
-export const generateId = (prefix = ""): string => {
+export const generateId = (prefix = ''): string => {
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).substr(2, 9);
   return prefix ? `${prefix}_${timestamp}-${random}` : `${timestamp}-${random}`;
 };
-export const generateUUId = (prefix = ""): string => {
+export const generateUUId = (prefix = ''): string => {
   const uuid = crypto.randomUUID();
   return prefix ? `${prefix}_${uuid}` : uuid;
 };
 
 export const sanitizeString = (str: string): string => {
-  return str.replace(/[<>'"&]/g, "");
+  return str.replace(/[<>'"&]/g, '');
 };
 
 // Array utilities
@@ -67,7 +67,7 @@ export const chunkArray = <T>(array: T[], size: number): T[][] => {
 
 export const deepMerge = (
   target: Record<string, unknown>,
-  source: Record<string, unknown>
+  source: Record<string, unknown>,
 ): Record<string, unknown> => {
   const result = { ...target };
 
@@ -77,17 +77,17 @@ export const deepMerge = (
     }
 
     if (
-      typeof value === "object" &&
+      typeof value === 'object' &&
       value !== null &&
       !Array.isArray(value) &&
       key in result &&
-      typeof result[key] === "object" &&
+      typeof result[key] === 'object' &&
       result[key] !== null &&
       !Array.isArray(result[key])
     ) {
       result[key] = deepMerge(
         result[key] as Record<string, unknown>,
-        value as Record<string, unknown>
+        value as Record<string, unknown>,
       );
     } else {
       result[key] = value;
@@ -101,6 +101,6 @@ export const deepMerge = (
  * Pattern matching for cache keys
  */
 export const matchPattern = (key: string, pattern: string): boolean => {
-  const regex = new RegExp(pattern.replace(/\*/g, ".*"));
+  const regex = new RegExp(pattern.replace(/\*/g, '.*'));
   return regex.test(key);
 };

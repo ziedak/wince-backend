@@ -1,5 +1,5 @@
 {
-  "name": "@org/redis_client",
+  "name": "@org/simple-server",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -16,8 +16,6 @@
     }
   },
   "dependencies": {
-    "ioredis": "^5.0.0",
-    "@org/types": "workspace:*",
-    "@org/logger": "workspace:*"
+    "@org/types": "workspace:*"
   }
 }

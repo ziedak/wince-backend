@@ -47,6 +47,7 @@ export class HealthServer {
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
+      
       switch (req.url) {
         case '/live':
           res.writeHead(200, { 'Content-Type': 'text/plain' });

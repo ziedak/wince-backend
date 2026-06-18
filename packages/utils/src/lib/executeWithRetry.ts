@@ -12,6 +12,10 @@ import {
   circuitBreaker,
   wrap,
 } from 'cockatiel';
+
+const websocketConcurrentOperations = new Map<string, Set<string>>();
+const websocketCircuitBreakers = new Map<string, ReturnType<typeof circuitBreaker>>();
+
 /**
  * Enhanced options for retry operations with circuit breaker and metrics
  */
@@ -57,11 +61,28 @@ export interface RetryOptions extends ExecuteWithRetryOptions {
  * );
  * ```
  */
+type IMetrics = {
+  recordTimer: (
+    name: string,
+    duration: number,
+    tags?: Record<string, unknown>,
+  ) => void;
+  recordCounter: (
+    name: string,
+    value?: number,
+    tags?: Record<string, unknown>,
+  ) => void;
+  recordGauge: (
+    name: string,
+    value: number,
+    tags?: Record<string, unknown>,
+  ) => void;
+};
 export const executeWithRetry = async <T>(
   operation: () => Promise<T>,
   onError: (error: unknown, attempt?: number) => void,
   options: Partial<RetryOptions> = {},
-  metrics?: any,
+  metrics?: IMetrics,
 ): Promise<T> => {
   const config: Required<RetryOptions> = {
     operationName: 'Unknown Operation',
@@ -78,7 +99,7 @@ export const executeWithRetry = async <T>(
   const startTime = performance.now();
 
   try {
-    let result: T;
+    let result: T | undefined;
 
     if (config.enableCircuitBreaker) {
       // Use cockatiel for retry + circuit breaker
@@ -130,6 +151,12 @@ export const executeWithRetry = async <T>(
       }
     }
 
+    if (result === undefined) {
+      throw new Error(
+        `[executeWithRetry] ${config.operationName} returned undefined`,
+      );
+    }
+
     // Record success metrics
     if (config.enableMetrics && metrics) {
       try {
@@ -143,7 +170,7 @@ export const executeWithRetry = async <T>(
       }
     }
 
-    return result!;
+    return result;
   } catch (error) {
     // Record failure metrics
     if (config.enableMetrics && metrics) {
@@ -169,7 +196,7 @@ export const executeWithRetry = async <T>(
  * @template T - Return type of the Redis operation
  * @template R - Redis client type (defaults to any for flexibility)
  */
-export const executeRedisWithRetry = async <T, R = any>(
+export const executeRedisWithRetry = async <T, R>(
   redis: R,
   operation: (redis: R) => Promise<T>,
   onError: (error: unknown, attempt?: number) => void,
@@ -322,7 +349,7 @@ export const executeWebSocketWithRetry = async <T>(
     attempt?: number,
   ) => void,
   options: Partial<WebSocketRetryOptions> = {},
-  metrics?: any,
+  metrics?: IMetrics,
 ): Promise<T> => {
   const config: WebSocketRetryOptions = {
     operationName: 'websocket_operation',
@@ -372,10 +399,15 @@ export const executeWebSocketWithRetry = async <T>(
 
   // Track concurrent operations per connection
   const concurrentOpsKey = `concurrent_${safeConfig.connectionId}`;
-  if (!(global as any)[concurrentOpsKey]) {
-    (global as any)[concurrentOpsKey] = new Set<string>();
+  if (!websocketConcurrentOperations.has(concurrentOpsKey)) {
+    websocketConcurrentOperations.set(concurrentOpsKey, new Set<string>());
   }
-  const concurrentOps = (global as any)[concurrentOpsKey] as Set<string>;
+  const concurrentOps = websocketConcurrentOperations.get(concurrentOpsKey);
+  if (!concurrentOps) {
+    throw new Error(
+      `[executeWebSocketWithRetry] Failed to initialize concurrent operation tracking for ${safeConfig.connectionId}`,
+    );
+  }
 
   // Check concurrent operation limits
   if (concurrentOps.size >= safeConfig.maxConcurrentOperations) {
@@ -392,7 +424,7 @@ export const executeWebSocketWithRetry = async <T>(
   concurrentOps.add(operationId);
 
   try {
-    let result: T;
+    let result: T | undefined;
 
     // Set grace period for real-time operations
     if (safeConfig.isRealTime && safeConfig.gracePeriod > 0) {
@@ -415,11 +447,11 @@ export const executeWebSocketWithRetry = async <T>(
     if (safeConfig.enableCircuitBreaker) {
       // Use per-connection circuit breaker state
       const circuitBreakerKey = `circuit_${safeConfig.connectionId}`;
-      if (!(global as any)[circuitBreakerKey]) {
-        (global as any)[circuitBreakerKey] = circuitBreaker(handleAll, {
+      if (!websocketCircuitBreakers.has(circuitBreakerKey)) {
+        websocketCircuitBreakers.set(circuitBreakerKey, circuitBreaker(handleAll, {
           halfOpenAfter: safeConfig.circuitBreakerTimeout,
           breaker: new ConsecutiveBreaker(safeConfig.circuitBreakerThreshold),
-        });
+        }));
       }
 
       const retryPolicy = retry(handleAll, {
@@ -427,7 +459,12 @@ export const executeWebSocketWithRetry = async <T>(
         backoff: new ExponentialBackoff(),
       });
 
-      const circuitBreakerPolicy = (global as any)[circuitBreakerKey];
+      const circuitBreakerPolicy = websocketCircuitBreakers.get(circuitBreakerKey);
+      if (!circuitBreakerPolicy) {
+        throw new Error(
+          `[executeWebSocketWithRetry] Failed to initialize circuit breaker for ${safeConfig.connectionId}`,
+        );
+      }
       const retryWithBreaker = wrap(retryPolicy, circuitBreakerPolicy);
 
       // Add timeout for WebSocket operations
@@ -559,8 +596,15 @@ export const executeWebSocketWithRetry = async <T>(
         );
       }
     }
-
-    return result!;
+    if (result === undefined) {
+      throw new WebSocketOperationError(
+        `[executeWebSocketWithRetry] ${safeConfig.operationName} returned undefined`,
+        WebSocketErrorType.CONNECTION_LOST,
+        safeConfig.connectionId,
+        operationId,
+      );
+    }
+    return result;
   } catch (error) {
     // Record failure metrics with WebSocket context
     if (safeConfig.enableMetrics && metrics) {
@@ -629,7 +673,7 @@ export const executeWebSocketTokenRefresh = async <T>(
   ) => void,
   connectionId: string,
   options: Partial<WebSocketRetryOptions> = {},
-  metrics?: any,
+  metrics?: IMetrics,
 ): Promise<T> => {
   // Token refresh optimized defaults
   const tokenRefreshOptions: Partial<WebSocketRetryOptions> = {

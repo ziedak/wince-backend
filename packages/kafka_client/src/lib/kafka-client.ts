@@ -61,7 +61,6 @@ export const StickyAssignor: PartitionAssigner = ({ cluster }) => ({
 
     // Import protocol helpers via require so we stay ESM-compatible at the
     // TS source level (kafkajs internals are CJS)
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { MemberAssignment } = require('kafkajs/src/consumer/assignerProtocol') as {
       MemberAssignment: {
         encode(opts: { version: number; assignment: Record<string, number[]> }): Buffer;
@@ -78,7 +77,6 @@ export const StickyAssignor: PartitionAssigner = ({ cluster }) => ({
   },
 
   protocol({ topics }: { topics: string[] }) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { MemberMetadata } = require('kafkajs/src/consumer/assignerProtocol') as {
       MemberMetadata: { encode(opts: { version: number; topics: string[] }): Buffer };
     };

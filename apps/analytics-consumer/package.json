@@ -108,6 +108,6 @@
     "@org/logger": "workspace:*",
     "@org/monitoring": "workspace:*",
     "@org/redis_client": "workspace:*",
-    "@org/utils": "workspace:*"
+    "@org/uti ls": "workspace:*"
   }
 }

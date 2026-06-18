@@ -16,7 +16,7 @@
     }
   },
   "dependencies": {
-      "axios": "catalog:",
+      "axios": "1.18.0",
       "@org/utils": "*"
     },
     "devDependencies": {

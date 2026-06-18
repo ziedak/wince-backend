@@ -17,10 +17,18 @@ pub struct KafkaContext {
 
 impl rdkafka::ClientContext for KafkaContext {
     fn stats(&self, stats: rdkafka::Statistics) {
-        let any_broker_up = stats.brokers.values().any(|b| b.state == "UP");
-        if any_broker_up {
+        let brokers_up = stats.brokers.values().any(|b| b.state == "UP");
+        if brokers_up {
             self.health.report_kafka_healthy();
         }
+
+        // ─── Prometheus gauges ────────────────────────────────────────────
+        let total = stats.brokers.len() as f64;
+        let up = stats.brokers.values().filter(|b| b.state == "UP").count() as f64;
+        metrics::gauge!("ingestion_kafka_brokers_down").set(total - up);
+        metrics::gauge!("ingestion_kafka_producer_queue_depth").set(stats.msg_cnt as f64);
+        metrics::gauge!("ingestion_kafka_producer_queue_bytes").set(stats.msg_size as f64);
+        metrics::gauge!("ingestion_kafka_producer_queue_depth_limit").set(stats.msg_max as f64);
     }
 }
 

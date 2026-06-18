@@ -9,7 +9,6 @@
       "!{projectRoot}/src/test-setup.[jt]s",
       "!{projectRoot}/.eslintrc.json",
       "!{projectRoot}/eslint.config.mjs",
-      "!{projectRoot}/jest.config.[jt]s",
       "!{projectRoot}/test-setup.[jt]s"
     ],
     "sharedGlobals": []
@@ -57,16 +56,6 @@
       "options": {
         "targetName": "lint"
       }
-    },
-    {
-      "plugin": "@nx/jest/plugin",
-      "options": {
-        "targetName": "test"
-      },
-      "exclude": [
-        "apps/analytics-consumer-e2e/**/*",
-        "packages/db/apps/enrichment-session-e2e/**/*"
-      ]
     }
   ],
   "neverConnectToCloud": true,

@@ -25,9 +25,6 @@
       "path": "./packages/utils"
     },
     {
-      "path": "./apps/analytics-consumer-e2e"
-    },
-    {
       "path": "./apps/analytics-consumer"
     },
     {
@@ -43,10 +40,10 @@
       "path": "./apps/enrichment-session"
     },
     {
-      "path": "./apps/enrichment-session-e2e"
+      "path": "./packages/http-client"
     },
     {
-      "path": "./packages/http-client"
+      "path": "./packages/simple-server"
     }
   ]
 }

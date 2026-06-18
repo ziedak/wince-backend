@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHttpClient, HttpClient, HttpStatus } from './http-client.js';
-
+import axios from 'axios';
+import  { executeWithRetry }  from '@org/utils';
 vi.mock('axios', () => {
   class MockAxiosHeaders {
     private readonly values = new Map<string, string>();
@@ -55,13 +56,13 @@ beforeEach(() => {
 });
 
 async function getAxiosMock() {
-  const axiosModule = await import('axios');
-  return axiosModule.create as unknown as ReturnType<typeof vi.fn>;
+  
+  return axios.create as unknown as ReturnType<typeof vi.fn>;
 }
 
 async function getUtilsMock() {
-  const utilsModule = await import('@org/utils');
-  return utilsModule.executeWithRetry as unknown as ReturnType<typeof vi.fn>;
+
+  return executeWithRetry as unknown as ReturnType<typeof vi.fn>;
 }
 
 describe('HttpClient', () => {

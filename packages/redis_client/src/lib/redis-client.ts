@@ -1,5 +1,5 @@
 import { Redis, RedisOptions, type RedisKey } from 'ioredis';
-import { type IMetricsCollector } from '@org/monitoring';
+import { type IMetrics } from '@org/types';
 import { createLogger } from '@org/logger';
 
 const REDIS_DEFAULT_OPTIONS: RedisOptions = {
@@ -33,7 +33,7 @@ export class RedisClient {
   private readonly logger = createLogger({ service: 'RedisClient' });
   private options: RedisOptions;
   constructor(
-    private readonly metrics?: IMetricsCollector,
+    private readonly metrics?: IMetrics,
     redisOptions: RedisOptions = {},
   ) {
     this.options = { ...REDIS_DEFAULT_OPTIONS, ...redisOptions };
@@ -46,7 +46,7 @@ export class RedisClient {
 
   static create(
     config: RedisOptions = {},
-    metrics?: IMetricsCollector,
+    metrics?: IMetrics,
   ): RedisClient {
     return new RedisClient(metrics, config);
   }
