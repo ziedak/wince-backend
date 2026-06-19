@@ -104,8 +104,5 @@ pub async fn track_handler(
     )
     .await?;
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({ "accepted": accepted })),
-    ))
+    Ok((StatusCode::ACCEPTED, Json(json!({ "accepted": accepted }))))
 }

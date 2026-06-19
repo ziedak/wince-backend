@@ -44,6 +44,12 @@
     },
     {
       "path": "./packages/simple-server"
+    },
+    {
+      "path": "./apps/frontend-e2e"
+    },
+    {
+      "path": "./apps/frontend"
     }
   ]
 }

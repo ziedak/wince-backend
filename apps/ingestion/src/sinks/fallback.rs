@@ -34,8 +34,7 @@ impl Sink for FallbackSink {
             Err(AppError::KafkaError(ref e)) => {
                 error!(
                     error = e,
-                    topic,
-                    "Primary Kafka sink failed — routing event to S3 fallback"
+                    topic, "Primary Kafka sink failed — routing event to S3 fallback"
                 );
                 metrics::counter!("ingestion_fallback_activations_total").increment(1);
                 // S3 errors are non-fatal: we've already lost Kafka; if S3

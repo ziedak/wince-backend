@@ -163,7 +163,14 @@ where
 
 // ─── DLQ helper (Phase 7) ────────────────────────────────────────────────────
 
-async fn send_to_dlq(sink: &dyn Sink, dlq_topic: &str, eid: &str, event_name: &str, error: &str, store_id: u32) {
+async fn send_to_dlq(
+    sink: &dyn Sink,
+    dlq_topic: &str,
+    eid: &str,
+    event_name: &str,
+    error: &str,
+    store_id: u32,
+) {
     let msg = serde_json::json!({
         "eid": eid,
         "t": event_name,
@@ -210,7 +217,15 @@ where
         if let Err(ref e) = validate(&event) {
             warn!(eid = %event.eid, error = %e, "Dropping invalid event");
             report_dropped_event("invalid");
-            send_to_dlq(sink.as_ref(), &config.kafka_topic_dlq, &event.eid, &event.t, &e.to_string(), store_id).await;
+            send_to_dlq(
+                sink.as_ref(),
+                &config.kafka_topic_dlq,
+                &event.eid,
+                &event.t,
+                &e.to_string(),
+                store_id,
+            )
+            .await;
             continue;
         }
 
@@ -274,14 +289,20 @@ where
                 "store_id": server_event.store_id,
                 "error": format!("event payload too large: {} bytes (max {})", payload.len(), config.max_event_bytes),
             });
-            let _ = sink.send(&config.kafka_topic_dlq, &server_event.sid, &dlq_msg.to_string()).await;
+            let _ = sink
+                .send(
+                    &config.kafka_topic_dlq,
+                    &server_event.sid,
+                    &dlq_msg.to_string(),
+                )
+                .await;
             continue;
         }
 
         // ── Step 7: Historical rerouting (Phase 9) ────────────────────────
         let age_ms = server_received_at - server_event.adjusted_ts;
-        let is_historical = config.historical_rerouting_enabled
-            && age_ms > config.historical_threshold_ms();
+        let is_historical =
+            config.historical_rerouting_enabled && age_ms > config.historical_threshold_ms();
 
         // ── Step 8: Overflow routing (Phase 5) ────────────────────────────
         let is_overflow =

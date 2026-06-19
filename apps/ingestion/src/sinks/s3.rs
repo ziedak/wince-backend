@@ -59,8 +59,7 @@ impl EventBuffer {
 
     fn should_flush(&self) -> bool {
         !self.data.is_empty()
-            && (self.data.len() >= MAX_BUFFER_BYTES
-                || self.last_flush.elapsed() >= FLUSH_INTERVAL)
+            && (self.data.len() >= MAX_BUFFER_BYTES || self.last_flush.elapsed() >= FLUSH_INTERVAL)
     }
 
     fn take(&mut self) -> Vec<u8> {
@@ -101,8 +100,7 @@ impl S3Sink {
             let bucket = bucket.clone();
             let buffer = buffer.clone();
             tokio::spawn(async move {
-                let mut interval =
-                    tokio::time::interval(Duration::from_millis(500));
+                let mut interval = tokio::time::interval(Duration::from_millis(500));
                 loop {
                     interval.tick().await;
                     let mut buf = buffer.lock().await;
@@ -118,7 +116,11 @@ impl S3Sink {
         }
 
         info!(bucket = %bucket, "S3 fallback sink initialized");
-        Ok(Self { client, bucket, buffer })
+        Ok(Self {
+            client,
+            bucket,
+            buffer,
+        })
     }
 }
 
