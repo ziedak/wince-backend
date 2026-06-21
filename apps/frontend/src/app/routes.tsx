@@ -1,19 +1,19 @@
 import { createBrowserRouter } from "react-router";
-import { Layout } from "./components/Layout";
-import { Dashboard } from "./components/Dashboard";
-import { LiveSessions } from "./components/LiveSessions";
-import { CustomerJourney } from "./components/CustomerJourney";
-import { AIDecisions } from "./components/AIDecisions";
-import { Interventions } from "./components/Interventions";
-import { Analytics } from "./components/Analytics";
-import { Settings } from "./components/Settings";
-import { Alerts } from "./components/Alerts";
-import { RevenueIntelligence } from "./components/RevenueIntelligence";
-import { CustomerSegments } from "./components/CustomerSegments";
-import { ABTesting } from "./components/ABTesting";
-import { Playbooks } from "./components/Playbooks";
-import { Integrations } from "./components/Integrations";
-import { NotFound } from "./components/NotFound";
+import { Layout } from "./views/Layout";
+import { Dashboard } from "./views/dashboard/Dashboard";
+import { LiveSessions } from "./views/liveSessions/LiveSessions";
+import { CustomerJourney } from "./views/CustomerJourney";
+import { AIDecisions } from "./views/AIDecisions";
+import { Interventions } from "./views/Interventions";
+import { Analytics } from "./views/Analytics";
+import { Settings } from "./views/Settings";
+import { Alerts } from "./views/Alerts";
+import { RevenueIntelligence } from "./views/RevenueIntelligence";
+import { CustomerSegments } from "./views/CustomerSegments";
+import { ABTesting } from "./views/ABTesting";
+import { Playbooks } from "./views/Playbooks";
+import { Integrations } from "./views/Integrations";
+import { NotFound } from "./views/NotFound";
 
 export const router = createBrowserRouter([
   {

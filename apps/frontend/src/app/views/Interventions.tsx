@@ -142,7 +142,7 @@ export function Interventions() {
       </div>
 
       {/* Quick stats cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid  md:grid-cols-3 gap-4">
         {[
           { icon: Tag, label: "Best Performing", name: "Exit Intent Popup", value: "$51,230", sub: "18.1% CVR", color: TEAL },
           { icon: TrendingUp, label: "Fastest Growing", name: "15% First-Time Discount", value: "+24% WoW", sub: "342 conversions", color: "#6366f1" },

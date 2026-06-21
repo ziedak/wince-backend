@@ -1,6 +1,8 @@
 /* 1. Initialize Tailwind v4 without global auto-scanning */
 @import 'tailwindcss' source(none);
 
+/* Force Radix styles into components layer so custom overrides work cleanly */
+@import "@radix-ui/themes/styles.css" layer(components);
 /* 2. Define your explicit search directories */
 @source '../**/*.{js,ts,jsx,tsx}';
 

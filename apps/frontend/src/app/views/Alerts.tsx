@@ -81,7 +81,7 @@ export function Alerts() {
       {/* System health */}
       <div className="bg-card border border-border rounded-lg p-5">
         <h2 className="text-sm font-semibold text-foreground mb-4">System Health</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid  md:grid-cols-2 gap-4">
           {systemHealth.map(h => (
             <div key={h.label}>
               <div className="flex items-center justify-between mb-1.5">

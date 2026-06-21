@@ -68,7 +68,7 @@ export function Analytics() {
       </div>
 
       {/* Revenue + Hourly charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid  lg:grid-cols-2 gap-4">
         <div className="bg-card border border-border rounded-lg p-5">
           <h2 className="text-sm font-semibold text-foreground mb-1">Revenue Recovery Trend</h2>
           <p className="text-xs text-muted-foreground mb-4">Recovered vs potential · 8 days</p>
@@ -113,7 +113,7 @@ export function Analytics() {
       </div>
 
       {/* Intervention performance + Segments */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid  lg:grid-cols-2 gap-4">
         <div className="bg-card border border-border rounded-lg p-5">
           <h2 className="text-sm font-semibold text-foreground mb-1">Intervention Revenue</h2>
           <p className="text-xs text-muted-foreground mb-4">Revenue attribution by type</p>

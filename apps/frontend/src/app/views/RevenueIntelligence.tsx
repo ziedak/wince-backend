@@ -118,7 +118,7 @@ export function RevenueIntelligence() {
       </div>
 
       {/* Cohort retention + Attribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid  lg:grid-cols-2 gap-4">
         {/* Cohort table */}
         <div className="bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-5 py-3 border-b border-border">

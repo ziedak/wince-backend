@@ -92,7 +92,7 @@ export function CustomerJourney() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid  lg:grid-cols-3 gap-4">
         {/* Timeline */}
         <div className="lg:col-span-2 bg-card border border-border rounded-lg p-5">
           <h2 className="text-sm font-semibold text-foreground mb-5">Journey Timeline</h2>

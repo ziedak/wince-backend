@@ -66,7 +66,7 @@ export function AIDecisions() {
       </div>
 
       {/* Model performance + recent decisions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid  lg:grid-cols-3 gap-4">
         {/* Radar chart */}
         <div className="bg-card border border-border rounded-lg p-5">
           <h2 className="text-sm font-semibold text-foreground mb-1">Model Performance</h2>

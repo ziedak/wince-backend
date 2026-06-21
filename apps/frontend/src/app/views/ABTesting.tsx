@@ -122,7 +122,7 @@ export function ABTesting() {
                   </div>
 
                   {/* Variant comparison */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div className="grid  md:grid-cols-2 gap-4 mb-4">
                     {test.variants.map((v, idx) => {
                       const cvr = (v.conversions / v.visitors * 100).toFixed(1);
                       const isWinner = test.winner === v.id || (!test.winner && idx === (bIsWinner ? 1 : 0));
