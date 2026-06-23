@@ -148,6 +148,9 @@
     "apps/frontend": {
       "name": "@org/frontend",
       "version": "0.0.1",
+      "dependencies": {
+        "tailwindcss": "^4.3.1",
+      },
     },
     "apps/frontend-e2e": {
       "name": "@org/frontend-e2e",

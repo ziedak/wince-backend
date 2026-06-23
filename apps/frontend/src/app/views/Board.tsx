@@ -294,7 +294,7 @@ function AltRow({ alt }: { alt: AltAction }) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
-      className="relative flex items-center justify-between px-3 py-2 rounded border border-border hover:border-white/15 hover:bg-white/[0.02] transition-all cursor-pointer group"
+      className="relative flex items-center justify-between px-3 py-2 rounded border border-border hover:border-white/15 hover:bg-white/2 transition-all cursor-pointer group"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -530,7 +530,7 @@ function SessionWorkspace({ session, onClose, onBack }: { session: Session; onCl
               { k: "Risk", v: `${session.risk}%`, desc: "Hovered shipping 4s" },
               { k: "Lift", v: "+$140", desc: "Exit intent (mobile)" },
             ].map((row) => (
-              <div key={row.k} className="grid grid-cols-2 border-b border-border last:border-b-0 hover:bg-white/[0.02] transition-colors">
+              <div key={row.k} className="grid grid-cols-2 border-b border-border last:border-b-0 hover:bg-white/2 transition-colors">
                 <div className="px-3 py-2 border-r border-border flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">{row.k}</span>
                   <span className="text-xs font-semibold text-white" style={{ fontFamily: "var(--font-mono)" }}>{row.v}</span>
@@ -926,7 +926,7 @@ export default function App() {
                       key={s.id}
                       onClick={() => selectSession(s)}
                       className={`w-full text-left rounded-lg border px-2.5 py-2 transition-all group ${
-                        isActive ? "border-cyan-500/40 bg-cyan-500/10" : isSelected ? "border-white/15 bg-white/[0.03]" : "border-border hover:border-white/12 hover:bg-white/[0.02]"
+                        isActive ? "border-cyan-500/40 bg-cyan-500/10" : isSelected ? "border-white/15 bg-white/3" : "border-border hover:border-white/12 hover:bg-white/2"
                       }`}
                     >
                       <div className="flex items-start gap-2">
