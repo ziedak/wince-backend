@@ -16,7 +16,7 @@
     "moduleResolution": "bundler",
     "paths": {
       "@/*": ["./src/*"],
-      "@primitives/*": ["./src/app/components/primitives/*"],
+      "@components/*": ["./src/app/components/ui/*"],
       "@utils/*": ["./src/app/utils/*"]
     }
   },

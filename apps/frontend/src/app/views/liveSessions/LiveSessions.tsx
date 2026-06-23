@@ -9,12 +9,12 @@ import {
 } from 'lucide-react';
 import { mockVisitors } from '../../lib/mockData';
 import { Link } from 'react-router';
-import { Header } from '@/app/components/primitives/header';
+import { Header } from '@/app/components/ui/header';
 import { MetricCards } from './components/MetricCards';
-import { FallbackAvatar } from '@/app/components/primitives/fallbackAvatar';
-import { Progress } from '@/app/components/primitives/progress';
-import { Chip } from '@/app/components/primitives/chip';
-import { Dot } from '@/app/components/primitives/dot';
+import { FallbackAvatar } from '@/app/components/ui/fallbackAvatar';
+import { Progress } from '@/app/components/ui/progress';
+import { Chip } from '@/app/components/ui/chip';
+import { Dot } from '@/app/components/ui/dot';
 import { SimpleTable } from '@/app/components/simpleTable';
 
 const deviceIcons = { desktop: Monitor, mobile: Smartphone, tablet: Tablet };

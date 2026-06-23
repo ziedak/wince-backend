@@ -25,8 +25,8 @@ import {
 } from '../../lib/mockData';
 import { KPICards } from './components/KPICards';
 import { MetricCards } from './components/MetricCards';
-import { SimpleList } from '@/app/components/primitives/simpleList';
-import { Header } from '@/app/components/primitives/header';
+import { SimpleList } from '@/app/components/ui/simpleList';
+import { Header } from '@/app/components/ui/header';
 
 const TEAL = '#00d4a8';
 const INDIGO = '#6366f1';

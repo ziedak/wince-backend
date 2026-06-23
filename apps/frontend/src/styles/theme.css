@@ -134,6 +134,10 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --color-trend-up: var(--trend-up);
   --color-trend-down: var(--trend-down);
+   /* --sidebar-width: 16rem;
+  --sidebar-width-icon: 3rem;
+  --sidebar-border: var(--color-slate-200); Or your exact theme variable color */
+
 }
 
 @layer base {
