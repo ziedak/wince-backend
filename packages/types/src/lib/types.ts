@@ -65,14 +65,99 @@ export interface RawKafkaEvent extends TrackEvent {
 
 /** A RawKafkaEvent after enrichment — written to enriched.events */
 export interface EnrichedEvent extends RawKafkaEvent {
-  /** Resolved customer ID (null for anonymous) */
-  customer_id: string | null;
+  /** Resolved customer DB id (null for anonymous) */
+  customer_id: number | null;
   /** Session cart value at the time of this event */
   cart_value: number;
   /** Rage-click count in this session */
   rage_click_count: number;
-  /** Customer email if known (for interventions) */
+  /** True when rage-click or rapid-scroll frustration signal detected */
+  is_frustrated: boolean;
+  /** Customer lifetime value in store currency */
+  lifetime_value: number;
+  /** Customer email if known */
   email?: string;
+  /** Customer opted in to email marketing */
+  email_consent: boolean;
+  /** Customer opted in to SMS marketing */
+  sms_consent: boolean;
+  /** True when an active session record was found during enrichment */
+  session_available: boolean;
+}
+
+// ─── Intervention types ──────────────────────────────────────────────────────
+
+export type InShopInterventionType =
+  | 'popup'
+  | 'countdown'
+  | 'free_shipping'
+  | 'price_reduction';
+
+export type OffShopInterventionType = 'email' | 'sms';
+
+export type InterventionType = InShopInterventionType | OffShopInterventionType;
+
+export type InterventionChannel = 'in_shop' | 'off_shop';
+
+/**
+ * Written to the `interventions` table and `intervention.log` Kafka topic
+ * by InterventionWriter immediately before delivery is attempted.
+ */
+export interface InterventionRecord {
+  /** uuidv5(namespace, event.eid + '|' + distinctId) — idempotency key */
+  interventionId: string;
+  sessionId: string;
+  storeId: number;
+  distinctId: string;
+  type: InterventionType;
+  channel: InterventionChannel;
+  /** Monetary value of the offer (discount amount, free-shipping threshold) */
+  value?: number;
+  /** Generated discount code, present when type = price_reduction */
+  discountCode?: string;
+  experimentId?: string;
+  variant?: string;
+  decisionLatencyMs: number;
+  inferenceConfidence?: number;
+}
+
+/**
+ * Payload sent by Decision Engine to Intervention Gateway POST /v1/push
+ * (internal, bypasses Kong). Also stored in Redis intervention:pending key
+ * and delivered to tracker.js via WebSocket or REST poll.
+ */
+export interface InShopPayload {
+  interventionId: string;
+  type: InShopInterventionType;
+  value?: number;
+  discountCode?: string;
+  /** ISO-8601 expiry timestamp — used by countdown interventions */
+  expiresAt?: string;
+}
+
+/**
+ * Payload sent by Decision Engine to Notification Service POST /v1/notify
+ * (internal, bypasses Kong). Notification Service checks consent flags
+ * before dispatching to SendGrid / Twilio.
+ */
+export interface NotificationRequest {
+  interventionId: string;
+  sessionId: string;
+  storeId: number;
+  distinctId: string;
+  type: OffShopInterventionType;
+  /** DB template_id for SendGrid / Twilio template lookup */
+  templateId: string;
+  email?: string;
+  phone?: string;
+  emailConsent: boolean;
+  smsConsent: boolean;
+  /** Dynamic template variables merged into the template */
+  templateData: {
+    discountCode?: string;
+    cartValue?: number;
+    [key: string]: unknown;
+  };
 }
 
 // ─── Store / API key context ─────────────────────────────────────────────────

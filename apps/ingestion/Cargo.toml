@@ -37,6 +37,14 @@ bytes = "1"
 flate2 = "1"
 brotli = { version = "7", default-features = false, features = ["std"] }
 zstd = { version = "0.13", default-features = false }
+# Phase 3 — Per-chunk body read timeout
+http-body-util = "0.1"
+futures = "0.3"
+# Phase 8 — OTLP distributed tracing
+opentelemetry = { version = "0.22", features = ["trace"] }
+opentelemetry_sdk = { version = "0.22", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.15", features = ["tonic"] }
+tracing-opentelemetry = "0.23"
 
 [dev-dependencies]
 tokio-test = "0.4"

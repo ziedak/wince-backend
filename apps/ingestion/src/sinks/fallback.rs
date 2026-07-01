@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use tracing::error;
 
 use crate::errors::AppError;
-use crate::sinks::Sink;
+use crate::sinks::{Sink, SinkHeaders};
 
 pub struct FallbackSink {
     primary: Arc<dyn Sink>,
@@ -28,8 +28,14 @@ impl FallbackSink {
 
 #[async_trait]
 impl Sink for FallbackSink {
-    async fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), AppError> {
-        match self.primary.send(topic, key, payload).await {
+    async fn send(
+        &self,
+        topic: &str,
+        key: &str,
+        payload: &str,
+        headers: &SinkHeaders,
+    ) -> Result<(), AppError> {
+        match self.primary.send(topic, key, payload, headers).await {
             Ok(()) => Ok(()),
             Err(AppError::KafkaError(ref e)) => {
                 error!(
@@ -40,7 +46,7 @@ impl Sink for FallbackSink {
                 // S3 errors are non-fatal: we've already lost Kafka; if S3
                 // also fails, log loudly but don't propagate to avoid 503ing
                 // the caller twice.
-                if let Err(s3_err) = self.fallback.send(topic, key, payload).await {
+                if let Err(s3_err) = self.fallback.send(topic, key, payload, headers).await {
                     error!(
                         error = %s3_err,
                         "S3 fallback also failed — event lost"

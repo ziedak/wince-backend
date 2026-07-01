@@ -25,7 +25,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::sinks::Sink;
+use crate::sinks::{Sink, SinkHeaders};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
@@ -151,7 +151,16 @@ async fn flush_to_s3(
 
 #[async_trait]
 impl Sink for S3Sink {
-    async fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), AppError> {
+    /// `_headers` is intentionally ignored: the JSON payload already contains
+    /// all routing metadata (store_id, source, etc.) and S3 has no native
+    /// header mechanism. Headers are a Kafka-layer concern.
+    async fn send(
+        &self,
+        topic: &str,
+        key: &str,
+        payload: &str,
+        _headers: &SinkHeaders,
+    ) -> Result<(), AppError> {
         let mut buf = self.buffer.lock().await;
         buf.push(topic, key, payload);
 

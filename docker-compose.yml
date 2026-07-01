@@ -1,11 +1,54 @@
 services:
-  # --- KONG API GATEWAY (DB-less mode) ---
+  # ---------------------------------------------------------------------------
+  # KONG API GATEWAY (DB mode — Postgres backend, config managed via deck sync)
+  # Architecture decision: DB mode chosen over DB-less so new store API keys
+  # can be provisioned dynamically via Admin API without a kong.yml reload.
+  # kong-deck applies kong.yml on startup; re-run `docker compose restart
+  # kong-deck` after any kong.yml change to sync.
+  # ---------------------------------------------------------------------------
+
+  # Dedicated Postgres for Kong (isolated from application DB)
+  kong-db:
+    image: postgres:14-alpine
+    container_name: kong-db
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+      POSTGRES_DB: kong
+    volumes:
+      - kong-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Bootstrap DB schema on first run; idempotent on subsequent runs
+  kong-migrations:
+    image: kong:3.6
+    container_name: kong-migrations
+    entrypoint: ["sh", "-c", "kong migrations bootstrap 2>/dev/null || true; kong migrations up"]
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PG_DATABASE: kong
+    restart: "no"
+
   kong:
     image: kong:3.6
     container_name: kong
     environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /home/zied/Workspace/wince_backend/kong.yml
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PG_DATABASE: kong
       KONG_PROXY_LISTEN: 0.0.0.0:8000
       KONG_ADMIN_LISTEN: 0.0.0.0:8001
       KONG_PROXY_ACCESS_LOG: /dev/stdout
@@ -14,12 +57,31 @@ services:
       KONG_ADMIN_ERROR_LOG: /dev/stderr
     ports:
       - "8000:8000" # Public proxy
-      - "8001:8001" # Admin API (optional, for debugging)
-    volumes:
-      - ./kong.yml:/home/zied/Workspace/wince_backend/kong.yml:ro
+      - "8001:8001" # Admin API
     depends_on:
-      - redis
+      kong-db:
+        condition: service_healthy
+      kong-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
     restart: unless-stopped
+
+  # Applies kong.yml declarative config to Kong via Admin API on startup.
+  # Re-run `docker compose restart kong-deck` to re-sync after kong.yml changes.
+  kong-deck:
+    image: kong/deck:v1.38.1
+    container_name: kong-deck
+    command: ["sync", "--kong-addr", "http://kong:8001", "--state", "/deck/kong.yml"]
+    volumes:
+      - ./kong.yml:/deck/kong.yml:ro
+    depends_on:
+      kong:
+        condition: service_healthy
+    restart: "no"
 
   # --- KAFKA & ZOOKEEPER ---
   zookeeper:
@@ -178,14 +240,81 @@ services:
   #   command: [ "sleep", "infinity" ]
   #   restart: unless-stopped
 
-  # intervention-gateway:
-  #   image: alpine:3.18
-  #   container_name: intervention-gateway
-  #   command: [ "sleep", "infinity" ]
-  #   restart: unless-stopped
+  decision-engine:
+    build:
+      context: .
+      dockerfile: apps/decision-engine/Dockerfile
+    container_name: decision-engine
+    depends_on:
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      init-kafka:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3007
+      KAFKA_HOSTS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      POSTGRES_URL: postgresql://admin:password@pgbouncer:6432/app_db
+      CLICKHOUSE_URL: http://clickhouse:8123
+      INTERNAL_SECRET: dev-internal-secret
+      GATEWAY_URL: http://intervention-gateway:3005
+      NOTIFICATION_URL: http://notification-service:3006
+      LOG_LEVEL: info
+      # MODEL_PATH: /app/models/dummy.onnx  # uncomment after running generate-dummy-onnx.py
+    ports:
+      - "3007:3007"
+    restart: unless-stopped
+
+  intervention-gateway:
+    build:
+      context: .
+      dockerfile: apps/intervention-gateway/Dockerfile
+    container_name: intervention-gateway
+    depends_on:
+      redis:
+        condition: service_started
+    environment:
+      PORT: 3005
+      REDIS_URL: redis://redis:6379
+      INTERNAL_SECRET: dev-internal-secret
+      POD_IP: intervention-gateway  # Docker hostname acts as pod IP in single-node dev
+      WS_TTL_SECONDS: 60
+      PENDING_TTL_SECONDS: 1800
+      LOG_LEVEL: info
+    ports:
+      - "3005:3005"
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: apps/notification-service/Dockerfile
+    container_name: notification-service
+    depends_on:
+      kafka:
+        condition: service_started
+      init-kafka:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3006
+      KAFKA_HOSTS: kafka:29092
+      INTERNAL_SECRET: dev-internal-secret
+      LOG_LEVEL: info
+      # SENDGRID_API_KEY: your-key
+      # TWILIO_ACCOUNT_SID: your-sid
+      # TWILIO_AUTH_TOKEN: your-token
+      # TWILIO_FROM_NUMBER: +1xxxxxxxxxx
+    ports:
+      - "3006:3006"
+    restart: unless-stopped
 
 volumes:
   pgdata:
   redisdata:
   chdata:
   miniodata:
+  kong-db-data:

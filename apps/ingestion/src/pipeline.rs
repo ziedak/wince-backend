@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use redis::aio::ConnectionLike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,9 +9,11 @@ use tracing::{debug, warn};
 use crate::config::AppConfig;
 use crate::errors::AppError;
 use crate::metrics::report_dropped_event;
+use crate::quota_limiter::{QuotaBucket, QuotaLimiter};
 use crate::rate_limiter::OverflowLimiter;
 use crate::response::{BatchResult, EventOutcome};
-use crate::sinks::Sink;
+use crate::restrictions::RestrictionStore;
+use crate::sinks::{Sink, SinkHeaders};
 
 // ─── Wire format from browser SDK ────────────────────────────────────────────
 
@@ -43,6 +45,26 @@ pub struct RawEvent {
     pub pageview_id: Option<String>,
     pub offset: Option<i64>,
     pub schema_v: Option<u32>,
+    /// Per-event SDK processing flags.
+    #[serde(default)]
+    pub options: EventOptions,
+}
+
+/// Per-event processing flags sent by the client SDK.
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+pub struct EventOptions {
+    /// Skip server-side clock-skew correction for this event.
+    /// Useful for deliberately back-dated events from the SDK.
+    #[serde(default)]
+    pub disable_skew_correction: bool,
+    /// Event captured in cookieless mode; downstream consumers should avoid
+    /// cross-session identity resolution.
+    #[serde(default)]
+    pub cookieless_mode: bool,
+    /// Explicit SDK request to create/update a person profile for this event.
+    /// When `false` (default) the pipeline defers to organisation-level settings.
+    #[serde(default)]
+    pub process_person_profile: bool,
 }
 
 // ─── Server-enriched event ───────────────────────────────────────────────────
@@ -78,6 +100,8 @@ pub struct ServerEvent {
     pub source: String,
     pub server_received_at: i64,
     pub ip: String,
+    pub cookieless_mode: bool,
+    pub process_person_profile: bool,
 }
 
 // ─── Event classification (Phase 4) ─────────────────────────────────────────
@@ -113,7 +137,41 @@ fn topic_for<'a>(dt: &DataType, config: &'a AppConfig) -> &'a str {
     }
 }
 
-// ─── Validation (Phase 2) ────────────────────────────────────────────────────
+// ─── Illegal distinct-ID list ───────────────────────────────────────────────
+//
+// JavaScript SDKs sometimes send well-known placeholder strings instead of real
+// IDs.  We accept these events (so the funnel remains intact) but disable person
+// processing to prevent poisoning the identity graph.
+const ILLEGAL_IDS: &[&str] = &[
+    "0",
+    "00000000-0000-0000-0000-000000000000",
+    "[object object]",
+    "[object Object]",
+    "anonymous",
+    "anonymous-user",
+    "distinct_id",
+    "email",
+    "false",
+    "guest",
+    "nan",
+    "none",
+    "not authenticated",
+    "not-authenticated",
+    "not_authenticated",
+    "null",
+    "system",
+    "undefined",
+    "unknown",
+];
+
+/// Returns `true` if `id` is a known SDK placeholder that must not be used for
+/// identity resolution.  Comparison is case-insensitive and trims whitespace.
+fn is_illegal_id(id: &str) -> bool {
+    let id = id.trim().to_ascii_lowercase();
+    ILLEGAL_IDS.iter().any(|illegal| id == *illegal)
+}
+
+// ─── Validation ───────────────────────────────────────────────────────────────
 
 fn validate(event: &RawEvent) -> Result<(), AppError> {
     if event.eid.is_empty() {
@@ -135,6 +193,23 @@ fn validate(event: &RawEvent) -> Result<(), AppError> {
     if event.anon.is_empty() {
         return Err(AppError::BadRequest("missing required field: anon".into()));
     }
+    // Field length limits — prevent identity graph pollution from over-long IDs.
+    const MAX_LEN: usize = 200;
+    if event.t.len() > MAX_LEN {
+        return Err(AppError::BadRequest(
+            format!("field t exceeds max length of {MAX_LEN}"),
+        ));
+    }
+    if event.anon.len() > MAX_LEN {
+        return Err(AppError::BadRequest(
+            format!("field anon exceeds max length of {MAX_LEN}"),
+        ));
+    }
+    if event.uid.as_deref().map_or(false, |u| u.len() > MAX_LEN) {
+        return Err(AppError::BadRequest(
+            format!("field uid exceeds max length of {MAX_LEN}"),
+        ));
+    }
     // Guard against impossible clock values that would corrupt adjusted_ts.
     if event.ts < 946_684_800_000 {
         return Err(AppError::BadRequest(
@@ -146,20 +221,44 @@ fn validate(event: &RawEvent) -> Result<(), AppError> {
 
 // ─── Bloom filter deduplication ──────────────────────────────────────────────
 
-async fn is_duplicate<C>(redis: &mut C, bloom_key: &str, eid: &str) -> Result<bool, AppError>
+/// Bloom filter key TTL — 48 h in seconds.  Each daily window key is kept
+/// alive for 48 h from its last write to ensure cross-midnight deduplication.
+const BLOOM_KEY_TTL_SECS: u64 = 48 * 60 * 60; // 172 800
+
+/// Return the today and yesterday window keys for the Bloom filter.
+///
+/// Keys are formatted as `{prefix}:{YYYYMMDD}` so each calendar day gets its
+/// own Bloom filter.  Checking both windows catches duplicates submitted just
+/// before and just after midnight.
+fn bloom_window_keys(prefix: &str, now: DateTime<Utc>) -> (String, String) {
+    let today = format!("{prefix}:{}", now.format("%Y%m%d"));
+    let yesterday = format!(
+        "{prefix}:{}",
+        (now - Duration::days(1)).format("%Y%m%d")
+    );
+    (today, yesterday)
+}
+
+async fn is_duplicate<C>(redis: &mut C, bloom_key_prefix: &str, eid: &str) -> Result<bool, AppError>
 where
     C: ConnectionLike,
 {
-    let (exists, _added): (i64, i64) = redis::pipe()
-        .cmd("BF.EXISTS")
-        .arg(bloom_key)
-        .arg(eid)
-        .cmd("BF.ADD")
-        .arg(bloom_key)
-        .arg(eid)
+    let (today_key, yesterday_key) = bloom_window_keys(bloom_key_prefix, Utc::now());
+
+    // Single pipeline round-trip:
+    //   1. Check today's window   — exists_today
+    //   2. Check yesterday's window — exists_yesterday (cross-midnight dedup)
+    //   3. Record in today's window
+    //   4. Refresh TTL on today's key (48 h from last write for that date)
+    let (exists_today, exists_yesterday, _added, _expire): (i64, i64, i64, i64) = redis::pipe()
+        .cmd("BF.EXISTS").arg(&today_key).arg(eid)
+        .cmd("BF.EXISTS").arg(&yesterday_key).arg(eid)
+        .cmd("BF.ADD").arg(&today_key).arg(eid)
+        .cmd("EXPIRE").arg(&today_key).arg(BLOOM_KEY_TTL_SECS)
         .query_async(redis)
         .await?;
-    Ok(exists == 1)
+
+    Ok(exists_today == 1 || exists_yesterday == 1)
 }
 
 // ─── DLQ helper (Phase 7) ────────────────────────────────────────────────────
@@ -171,6 +270,8 @@ async fn send_to_dlq(
     event_name: &str,
     error: &str,
     store_id: u32,
+    source: &str,
+    server_received_at: i64,
 ) {
     let msg = serde_json::json!({
         "eid": eid,
@@ -178,7 +279,8 @@ async fn send_to_dlq(
         "store_id": store_id,
         "error": error,
     });
-    if let Err(e) = sink.send(dlq_topic, eid, &msg.to_string()).await {
+    let headers = SinkHeaders::for_dlq(store_id, source, event_name, server_received_at, error);
+    if let Err(e) = sink.send(dlq_topic, eid, &msg.to_string(), &headers).await {
         warn!(eid, error = %e, "Failed to send invalid event to DLQ");
     }
 }
@@ -193,6 +295,8 @@ pub async fn process_envelope<C>(
     config: &AppConfig,
     sink: &Arc<dyn Sink>,
     overflow_limiter: &OverflowLimiter,
+    quota_limiter: &QuotaLimiter,
+    restriction_store: &RestrictionStore,
     redis: &mut C,
 ) -> Result<BatchResult, AppError>
 where
@@ -227,6 +331,8 @@ where
                 &event.t,
                 &e.to_string(),
                 store_id,
+                &source,
+                server_received_at,
             )
             .await;
             result.push(eid, EventOutcome::Drop, Some("validation_failed"));
@@ -247,8 +353,56 @@ where
             }
         }
 
+        // ── Step 2.5: Illegal distinct-ID check ─────────────────────────────
+        // Accept the event but disable person processing to protect the
+        // identity graph from SDK placeholder IDs.
+        let force_disable_person_processing = is_illegal_id(&event.anon)
+            || event.uid.as_deref().map_or(false, is_illegal_id);
+        if force_disable_person_processing {
+            metrics::counter!("ingestion_illegal_id_total").increment(1);
+            warn!(eid = %eid, anon = %event.anon, "Illegal distinct ID — person processing disabled");
+        }
+
+        // ── Step 2.6: Quota check ─────────────────────────────────────────
+        let quota_bucket = QuotaBucket::from_event_type(&event.t);
+        if quota_limiter.is_exceeded(store_id, quota_bucket).await {
+            metrics::counter!(
+                "ingestion_quota_exceeded_total",
+                "bucket" => quota_bucket.as_str()
+            )
+            .increment(1);
+            debug!(
+                eid = %eid,
+                store_id,
+                bucket = quota_bucket.as_str(),
+                "Event dropped: store quota exceeded"
+            );
+            result.push(eid, EventOutcome::Drop, Some("quota_exceeded"));
+            continue;
+        }
+
+        // ── Step 2.7: Event restriction check ───────────────────────────────
+        if restriction_store.is_restricted(store_id, &event.t).await {
+            metrics::counter!("ingestion_restricted_event_total").increment(1);
+            debug!(
+                eid = %eid,
+                store_id,
+                event_type = %event.t,
+                "Event dropped: restricted event type"
+            );
+            result.push(eid, EventOutcome::Drop, Some("restricted"));
+            continue;
+        }
+
         // ── Step 3: Clock-skew correction ────────────────────────────────
-        let adjusted_ts = event.ts + skew;
+        // Save options before event is moved into ServerEvent.
+        let cookieless_mode = event.options.cookieless_mode;
+        let process_person_profile = event.options.process_person_profile;
+        let adjusted_ts = if event.options.disable_skew_correction {
+            event.ts
+        } else {
+            event.ts + skew
+        };
 
         // ── Step 4: Build enriched server event ───────────────────────────
         let server_event = ServerEvent {
@@ -273,6 +427,8 @@ where
             source: source.clone(),
             server_received_at,
             ip: ip.clone(),
+            cookieless_mode,
+            process_person_profile,
         };
 
         // ── Step 5: Serialize ─────────────────────────────────────────────
@@ -294,8 +450,27 @@ where
                 "store_id": server_event.store_id,
                 "error": format!("event payload too large: {} bytes (max {})", payload.len(), config.max_event_bytes),
             });
+            let dlq_headers = SinkHeaders {
+                store_id,
+                source: source.clone(),
+                anon_id: server_event.anon.clone(),
+                session_id: server_event.sid.clone(),
+                event_type: server_event.t.clone(),
+                adjusted_ts: server_event.adjusted_ts,
+                server_received_at,
+                force_disable_person_processing: false,
+                historical_migration: false,
+                dlq_reason: Some("too_big".to_string()),
+                cookieless_mode: server_event.cookieless_mode,
+                process_person_profile: server_event.process_person_profile,
+            };
             let _ = sink
-                .send(&config.kafka_topic_dlq, &server_event.sid, &dlq_msg.to_string())
+                .send(
+                    &config.kafka_topic_dlq,
+                    &server_event.sid,
+                    &dlq_msg.to_string(),
+                    &dlq_headers,
+                )
                 .await;
             result.push(eid, EventOutcome::Drop, Some("too_big"));
             continue;
@@ -323,14 +498,32 @@ where
         };
 
         // ── Step 10: Produce ─────────────────────────────────────────────
+        let sink_headers = SinkHeaders {
+            store_id,
+            source: source.clone(),
+            anon_id: server_event.anon.clone(),
+            session_id: server_event.sid.clone(),
+            event_type: server_event.t.clone(),
+            adjusted_ts: server_event.adjusted_ts,
+            server_received_at,
+            force_disable_person_processing,
+            historical_migration: is_historical,
+            dlq_reason: None,
+            cookieless_mode,
+            process_person_profile,
+        };
         let start = std::time::Instant::now();
-        match sink.send(topic, &partition_key, &payload).await {
+        match sink.send(topic, &partition_key, &payload, &sink_headers).await {
             Ok(()) => {
                 metrics::histogram!("ingestion_produce_duration_seconds")
                     .record(start.elapsed().as_secs_f64());
                 metrics::histogram!("ingestion_event_payload_bytes").record(payload.len() as f64);
                 metrics::counter!("ingestion_events_accepted_total").increment(1);
-                result.push(eid, EventOutcome::Ok, None);
+                if force_disable_person_processing {
+                    result.push(eid, EventOutcome::Warning, Some("illegal_id"));
+                } else {
+                    result.push(eid, EventOutcome::Ok, None);
+                }
             }
             Err(e) => {
                 warn!(eid = %eid, error = %e, "Kafka produce failed — marking event for retry");
@@ -366,8 +559,8 @@ mod tests {
             window_id: None,
             pageview_id: None,
             offset: None,
-
             schema_v: Some(1),
+            options: EventOptions::default(),
         }
     }
 
@@ -428,5 +621,50 @@ mod tests {
     fn classify_routes_analytics_by_default() {
         assert!(matches!(classify("$page_view"), DataType::Analytics));
         assert!(matches!(classify("custom_event"), DataType::Analytics));
+    }
+
+    #[test]
+    fn event_options_all_default_false() {
+        let opts: EventOptions = serde_json::from_str("{}").unwrap();
+        assert!(!opts.disable_skew_correction);
+        assert!(!opts.cookieless_mode);
+        assert!(!opts.process_person_profile);
+    }
+
+    #[test]
+    fn event_options_disable_skew_correction_parsed() {
+        let opts: EventOptions =
+            serde_json::from_str(r#"{"disable_skew_correction":true}"#).unwrap();
+        assert!(opts.disable_skew_correction);
+        assert!(!opts.cookieless_mode);
+        assert!(!opts.process_person_profile);
+    }
+
+    #[test]
+    fn event_options_cookieless_and_person_profile_parsed() {
+        let opts: EventOptions =
+            serde_json::from_str(r#"{"cookieless_mode":true,"process_person_profile":true}"#)
+                .unwrap();
+        assert!(!opts.disable_skew_correction);
+        assert!(opts.cookieless_mode);
+        assert!(opts.process_person_profile);
+    }
+
+    #[test]
+    fn bloom_key_rotation_correct_format() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap();
+        let (today, yesterday) = bloom_window_keys("idem:bloom", now);
+        assert_eq!(today, "idem:bloom:20260701");
+        assert_eq!(yesterday, "idem:bloom:20260630");
+    }
+
+    #[test]
+    fn bloom_key_rotation_crosses_year_boundary() {
+        use chrono::TimeZone;
+        let jan_1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let (today, yesterday) = bloom_window_keys("idem:bloom", jan_1);
+        assert_eq!(today, "idem:bloom:20260101");
+        assert_eq!(yesterday, "idem:bloom:20251231");
     }
 }

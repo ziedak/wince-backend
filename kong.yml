@@ -76,17 +76,71 @@ services:
           redis_port: 6379
           limit_by: consumer
 
-  # --- WebSocket Gateway (no authentication, just routing) ---
+  # --- Intervention Gateway (WebSocket + REST poll for tracker.js) ---
+  # Internal POST /v1/push is NOT routed through Kong — Decision Engine calls
+  # http://intervention-gateway:3005 directly via Docker network.
   - name: intervention-gateway
     url: http://intervention-gateway:3005
     routes:
+      # WebSocket upgrade — tracker.js primary delivery channel
       - name: ws-route
         paths:
           - /ws
         strip_path: false
         protocols:
-          - http # Kong handles WebSocket upgrade automatically
+          - http
           - https
+        plugins:
+          - name: key-auth
+            config:
+              key_names:
+                - api_key
+              key_in_query: true
+              key_in_header: false
+              hide_credentials: true
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: redis
+              redis_host: redis
+              redis_port: 6379
+              limit_by: credential
+
+      # REST poll fallback — tracker.js polls when WebSocket disconnected
+      - name: intervention-poll-route
+        paths:
+          - /v1/interventions/pending
+        methods:
+          - GET
+        strip_path: false
+        protocols:
+          - http
+          - https
+        plugins:
+          - name: key-auth
+            config:
+              key_names:
+                - api_key
+              key_in_query: true
+              key_in_header: false
+              hide_credentials: true
+          - name: cors
+            config:
+              origins:
+                - "*"   # restrict to storefront domains in production
+              methods:
+                - GET
+                - OPTIONS
+              headers:
+                - Content-Type
+              max_age: 3600
+          - name: rate-limiting
+            config:
+              minute: 120   # tracker.js polls every 30s; 120/min allows burst
+              policy: redis
+              redis_host: redis
+              redis_port: 6379
+              limit_by: credential
 
 # -----------------------------------------------------------------------------
 # CONSUMERS & CREDENTIALS

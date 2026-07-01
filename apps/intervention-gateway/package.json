@@ -1,0 +1,39 @@
+{
+  "name": "@org/intervention-gateway",
+  "version": "0.0.1",
+  "private": true,
+  "nx": {
+    "targets": {
+      "build": {
+        "executor": "@nx/js:tsc",
+        "outputs": ["{options.outputPath}"],
+        "options": {
+          "outputPath": "apps/intervention-gateway/dist",
+          "main": "apps/intervention-gateway/src/main.ts",
+          "tsConfig": "apps/intervention-gateway/tsconfig.app.json",
+          "assets": []
+        }
+      },
+      "serve": {
+        "continuous": true,
+        "executor": "@nx/js:node",
+        "defaultConfiguration": "development",
+        "dependsOn": ["build"],
+        "options": {
+          "buildTarget": "@org/intervention-gateway:build",
+          "runBuildTargetDependencies": false
+        }
+      },
+      "test": {
+        "options": { "passWithNoTests": true }
+      }
+    }
+  },
+  "dependencies": {
+    "@org/logger": "*",
+    "@org/monitoring": "*",
+    "@org/redis_client": "*",
+    "@org/types": "*",
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.44.0"
+  }
+}

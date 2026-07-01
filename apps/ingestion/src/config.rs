@@ -91,6 +91,28 @@ pub struct AppConfig {
     #[envconfig(from = "OVERFLOW_BURST", default = "1000")]
     pub overflow_burst: u32,
 
+    // ─── Phase 4 — Distributed rate limiting ──────────────────────────────────
+    /// When true, a Redis sliding-window limiter enforces the per-store rate
+    /// across all service replicas.  Runs after the in-process gate.
+    #[envconfig(from = "DISTRIBUTED_RATE_LIMIT_ENABLED", default = "false")]
+    pub distributed_rate_limit_enabled: bool,
+
+    /// Maximum requests per store per second, shared across all replicas.
+    #[envconfig(from = "DISTRIBUTED_RATE_LIMIT_PER_SECOND", default = "1000")]
+    pub distributed_rate_limit_per_second: u64,
+
+    /// Dry-run mode for the in-process store rate limiter.
+    #[envconfig(from = "RATE_LIMIT_DRY_RUN", default = "false")]
+    pub rate_limit_dry_run: bool,
+
+    /// Dry-run mode for the hot-partition overflow limiter.
+    #[envconfig(from = "OVERFLOW_DRY_RUN", default = "false")]
+    pub overflow_dry_run: bool,
+
+    /// Dry-run mode for the distributed Redis rate limiter.
+    #[envconfig(from = "DISTRIBUTED_RATE_LIMIT_DRY_RUN", default = "false")]
+    pub distributed_rate_limit_dry_run: bool,
+
     // ─── Phase 6 — S3 fallback sink ───────────────────────────────────────────
     /// When true, Kafka errors route events to S3 instead of dropping them.
     #[envconfig(from = "S3_FALLBACK_ENABLED", default = "false")]
@@ -115,6 +137,55 @@ pub struct AppConfig {
 
     #[envconfig(from = "HISTORICAL_THRESHOLD_DAYS", default = "1")]
     pub historical_threshold_days: u32,
+
+    // ─── Phase 3 — Body read safety ──────────────────────────────────────────
+    /// Per-chunk body read timeout in milliseconds.
+    /// When set, aborts requests where the client stalls mid-upload for longer
+    /// than this window (slow-loris protection).  Default: disabled.
+    #[envconfig(from = "BODY_CHUNK_TIMEOUT_MS")]
+    pub body_chunk_timeout_ms: Option<u64>,
+
+    /// Maximum raw (compressed) request body size in bytes (default 10 MiB).
+    /// Bodies larger than this are rejected before decompression.
+    #[envconfig(from = "MAX_REQUEST_BODY_BYTES", default = "10485760")]
+    pub max_request_body_bytes: usize,
+
+    // ─── Phase 5 — Quota limiter ─────────────────────────────────────────────
+    /// When true, events for stores in the `quota:exceeded` Redis set are dropped.
+    #[envconfig(from = "QUOTA_LIMITER_ENABLED", default = "false")]
+    pub quota_limiter_enabled: bool,
+
+    /// How often (seconds) the background task refreshes the exceeded-quota set.
+    #[envconfig(from = "QUOTA_REFRESH_INTERVAL_S", default = "60")]
+    pub quota_refresh_interval_s: u64,
+
+    // ─── Phase 6 — Event restrictions ─────────────────────────────────────────
+    /// When true, events for (store_id, event_type) pairs in the Redis
+    /// restriction sets are dropped without going to Kafka.
+    #[envconfig(from = "RESTRICTIONS_ENABLED", default = "false")]
+    pub restrictions_enabled: bool,
+
+    /// How often (seconds) the background task refreshes the restriction cache.
+    #[envconfig(from = "RESTRICTIONS_REFRESH_INTERVAL_S", default = "60")]
+    pub restrictions_refresh_interval_s: u64,
+
+    // ─── Phase 8 — Observability (OTLP + graceful drain) ─────────────────────
+    /// OTLP gRPC endpoint (e.g. `http://tempo:4317`).  When unset, spans are
+    /// only emitted via the JSON log layer.
+    #[envconfig(from = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    pub otel_exporter_otlp_endpoint: Option<String>,
+
+    /// Service name reported in OTel resource attributes (default: "ingestion").
+    #[envconfig(from = "OTEL_SERVICE_NAME", default = "ingestion")]
+    pub otel_service_name: String,
+
+    /// Trace sampling ratio 0.0–1.0.  1.0 samples every request (default).
+    #[envconfig(from = "OTEL_SAMPLE_RATIO", default = "1.0")]
+    pub otel_sample_ratio: f64,
+
+    /// Seconds to wait for the Kafka producer to flush on graceful shutdown.
+    #[envconfig(from = "KAFKA_DRAIN_TIMEOUT_SECS", default = "30")]
+    pub kafka_drain_timeout_secs: u64,
 }
 
 impl AppConfig {

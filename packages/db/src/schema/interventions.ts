@@ -19,6 +19,7 @@ export const interventions = pgTable('interventions', {
     .references(() => stores.id),
   distinctId: text('distinct_id'),
   type: text('type').notNull(),
+  channel: text('channel').notNull().default('in_shop'),
   value: numeric('value'),
   discountCode: text('discount_code'),
   sentAt: timestamp('sent_at', { withTimezone: true }).defaultNow(),

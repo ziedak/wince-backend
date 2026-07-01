@@ -25,6 +25,9 @@ pub enum AppError {
 
     #[error("internal error: {0}")]
     InternalError(String),
+
+    #[error("request timeout")]
+    RequestTimeout,
 }
 
 impl IntoResponse for AppError {
@@ -63,6 +66,10 @@ impl IntoResponse for AppError {
             AppError::InternalError(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal server error".to_string(),
+            ),
+            AppError::RequestTimeout => (
+                StatusCode::REQUEST_TIMEOUT,
+                "request timed out".to_string(),
             ),
             AppError::RateLimited => unreachable!("handled above"),
         };
