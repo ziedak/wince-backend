@@ -1,5 +1,9 @@
 {
   "name": "@org/frontend",
   "version": "0.0.1",
-  "private": true
+  "private": true,
+  "scripts": {
+      "generate-routes": "tsr generate",
+    "watch-routes": "tsr watch"
+  }
 }

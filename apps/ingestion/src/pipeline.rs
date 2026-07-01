@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::errors::AppError;
 use crate::metrics::report_dropped_event;
 use crate::rate_limiter::OverflowLimiter;
+use crate::response::{BatchResult, EventOutcome};
 use crate::sinks::Sink;
 
 // ─── Wire format from browser SDK ────────────────────────────────────────────
@@ -193,52 +194,56 @@ pub async fn process_envelope<C>(
     sink: &Arc<dyn Sink>,
     overflow_limiter: &OverflowLimiter,
     redis: &mut C,
-) -> Result<usize, AppError>
+) -> Result<BatchResult, AppError>
 where
     C: ConnectionLike,
 {
     let server_received_at = Utc::now().timestamp_millis();
+    let mut result = BatchResult::new();
 
-    // Phase 1 — batch size metric
+    // Batch size metric
     metrics::histogram!("ingestion_batch_size").record(envelope.events.len() as f64);
 
     // Clamp skew to ±30 min to ignore pathological clock drift.
     let raw_skew = server_received_at - envelope.sent_at;
     let skew = raw_skew.clamp(-1_800_000, 1_800_000);
 
-    // Phase 1 — clock skew metric
+    // Clock skew metric
     metrics::histogram!("ingestion_clock_skew_seconds")
         .record((raw_skew.unsigned_abs() as f64) / 1_000.0);
 
-    let mut accepted = 0usize;
-
     for event in envelope.events {
-        // ── Step 1: Validate (Phase 2) ────────────────────────────────────
+        // Save eid before any field moves.
+        let eid = event.eid.clone();
+
+        // ── Step 1: Validate ─────────────────────────────────────────────
         if let Err(ref e) = validate(&event) {
-            warn!(eid = %event.eid, error = %e, "Dropping invalid event");
+            warn!(eid = %eid, error = %e, "Dropping invalid event");
             report_dropped_event("invalid");
             send_to_dlq(
                 sink.as_ref(),
                 &config.kafka_topic_dlq,
-                &event.eid,
+                &eid,
                 &event.t,
                 &e.to_string(),
                 store_id,
             )
             .await;
+            result.push(eid, EventOutcome::Drop, Some("validation_failed"));
             continue;
         }
 
         // ── Step 2: Bloom filter deduplication ───────────────────────────
-        match is_duplicate(redis, &config.redis_bloom_key, &event.eid).await {
+        match is_duplicate(redis, &config.redis_bloom_key, &eid).await {
             Ok(true) => {
-                debug!(eid = %event.eid, "Dropping duplicate event");
+                debug!(eid = %eid, "Dropping duplicate event");
                 report_dropped_event("duplicate");
+                result.push(eid, EventOutcome::Drop, Some("duplicate"));
                 continue;
             }
             Ok(false) => {}
             Err(e) => {
-                warn!(eid = %event.eid, error = %e, "Redis dedup check failed, proceeding without dedup");
+                warn!(eid = %eid, error = %e, "Redis dedup check failed, proceeding without dedup");
             }
         }
 
@@ -274,37 +279,34 @@ where
         let payload = serde_json::to_string(&server_event)
             .map_err(|e| AppError::InternalError(format!("serialization failed: {e}")))?;
 
-        // ── Step 6: Size check (Phase 2) ──────────────────────────────────
+        // ── Step 6: Size check ────────────────────────────────────────────
         if payload.len() > config.max_event_bytes {
             warn!(
-                eid = %server_event.eid,
+                eid = %eid,
                 bytes = payload.len(),
                 max = config.max_event_bytes,
                 "Dropping oversized event"
             );
             report_dropped_event("too_big");
             let dlq_msg = serde_json::json!({
-                "eid": server_event.eid,
+                "eid": eid,
                 "t": server_event.t,
                 "store_id": server_event.store_id,
                 "error": format!("event payload too large: {} bytes (max {})", payload.len(), config.max_event_bytes),
             });
             let _ = sink
-                .send(
-                    &config.kafka_topic_dlq,
-                    &server_event.sid,
-                    &dlq_msg.to_string(),
-                )
+                .send(&config.kafka_topic_dlq, &server_event.sid, &dlq_msg.to_string())
                 .await;
+            result.push(eid, EventOutcome::Drop, Some("too_big"));
             continue;
         }
 
-        // ── Step 7: Historical rerouting (Phase 9) ────────────────────────
+        // ── Step 7: Historical rerouting ──────────────────────────────────
         let age_ms = server_received_at - server_event.adjusted_ts;
         let is_historical =
             config.historical_rerouting_enabled && age_ms > config.historical_threshold_ms();
 
-        // ── Step 8: Overflow routing (Phase 5) ────────────────────────────
+        // ── Step 8: Overflow routing ──────────────────────────────────────
         let is_overflow =
             !is_historical && overflow_limiter.is_hot_key(store_id, &server_event.anon);
 
@@ -320,20 +322,25 @@ where
             (topic_for(&dt, config), server_event.sid.clone())
         };
 
-        // ── Step 10: Produce (Phase 1 metrics) ────────────────────────────
+        // ── Step 10: Produce ─────────────────────────────────────────────
         let start = std::time::Instant::now();
-        if let Err(e) = sink.send(topic, &partition_key, &payload).await {
-            report_dropped_event("kafka_error");
-            return Err(e);
+        match sink.send(topic, &partition_key, &payload).await {
+            Ok(()) => {
+                metrics::histogram!("ingestion_produce_duration_seconds")
+                    .record(start.elapsed().as_secs_f64());
+                metrics::histogram!("ingestion_event_payload_bytes").record(payload.len() as f64);
+                metrics::counter!("ingestion_events_accepted_total").increment(1);
+                result.push(eid, EventOutcome::Ok, None);
+            }
+            Err(e) => {
+                warn!(eid = %eid, error = %e, "Kafka produce failed — marking event for retry");
+                report_dropped_event("kafka_error");
+                result.push(eid, EventOutcome::Retry, Some("not_persisted"));
+            }
         }
-        metrics::histogram!("ingestion_produce_duration_seconds")
-            .record(start.elapsed().as_secs_f64());
-        metrics::histogram!("ingestion_event_payload_bytes").record(payload.len() as f64);
-        metrics::counter!("ingestion_events_accepted_total").increment(1);
-        accepted += 1;
     }
 
-    Ok(accepted)
+    Ok(result)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

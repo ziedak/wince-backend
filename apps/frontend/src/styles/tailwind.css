@@ -5,7 +5,10 @@
 @import "@radix-ui/themes/styles.css" layer(components);
 
 /* 2. Define your explicit search directories */
+/* @source '../../apps/frontend*.{js,ts,jsx,tsx}'; */
 @source '../**/*.{js,ts,jsx,tsx}';
 
 /* 3. Import the animation utilities after your configuration rules */
 @import 'tw-animate-css';
+@import 'tailwind-extras';
+@plugin "@tailwindcss/forms";

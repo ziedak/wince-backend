@@ -16,8 +16,19 @@
     "moduleResolution": "bundler",
     "paths": {
       "@/*": ["./src/*"],
-      "@components/*": ["./src/app/components/ui/*"],
-      "@utils/*": ["./src/app/utils/*"]
+      "@chadcn/*": ["./src/components/ui/*"],
+      "@components/*": ["./src/components/*"],
+      "@hooks/*": ["./src/hooks/*"],
+      "@context/*": ["./src/context/*"],
+      "@types/*": ["./src/types/*"],
+      "@stores/*": ["./src/stores/*"],
+      "@config/*": ["./src/config/*"],
+      "@services/*": ["./src/services/*"],
+      "@utils/*": ["./src/utils/*"],
+      "@lib/*": ["./src/lib/*"],
+      "@assets/*": ["./src/assets/*"],
+      "@features/*": ["./src/features/*"],
+      "@routes/*": ["./src/routes/*"],
     }
   },
   "exclude": [
@@ -39,5 +50,5 @@
     "eslint.config.cjs",
     "eslint.config.mjs"
   ],
-  "include": ["src/**/*.js", "src/**/*.jsx", "src/**/*.ts", "src/**/*.tsx"]
+  "include": ["src/**/*.js", "src/**/*.jsx", "src/**/*.ts", "src/**/*.tsx", "src/routesold.tsx.old"]
 }

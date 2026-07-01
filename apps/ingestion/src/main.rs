@@ -1,4 +1,5 @@
 mod config;
+mod decompression;
 mod errors;
 mod handler;
 mod health;
@@ -6,6 +7,7 @@ mod kafka;
 mod metrics;
 mod pipeline;
 mod rate_limiter;
+mod response;
 mod sinks;
 
 use axum::{

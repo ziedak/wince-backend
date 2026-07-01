@@ -1,17 +1,18 @@
 use axum::{
+    body::Bytes,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::IntoResponse,
-    Json,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tracing::instrument;
 
 use crate::config::AppConfig;
+use crate::decompression::decompress;
 use crate::errors::AppError;
 use crate::pipeline::{process_envelope, TrackingEnvelope};
 use crate::rate_limiter::{OverflowLimiter, StoreLimiter};
+use crate::response::BatchResult;
 use crate::sinks::Sink;
 
 #[derive(Clone)]
@@ -21,24 +22,28 @@ pub struct AppState {
     pub sink: Arc<dyn Sink>,
     /// Redis client — a new multiplexed connection is acquired per request.
     pub redis: Arc<redis::Client>,
-    /// Per-store HTTP-layer rate limiter (Phase 3).
+    /// Per-store HTTP-layer rate limiter.
     pub store_limiter: Arc<StoreLimiter>,
-    /// Per-(store, anon) overflow detector (Phase 5).
+    /// Per-(store, anon) overflow detector.
     pub overflow_limiter: Arc<OverflowLimiter>,
 }
 
 /// POST /v1/track
 ///
 /// Expects:
-///   X-Store-ID: <u32>   — injected by Kong from the validated API key consumer
-///   X-Source: browser | backend  — defaults to 'browser'
+///   X-Store-ID: <u32>          — injected by Kong from the validated API key consumer
+///   X-Source: browser|backend  — defaults to 'browser'
 ///   X-Real-IP or X-Forwarded-For — client IP (set by Kong)
-///   Body: TrackingEnvelope JSON
+///   Content-Encoding: gzip|deflate|br|zstd — optional body compression
+///   Body: TrackingEnvelope JSON (optionally compressed)
+///
+/// Returns 202 with a per-event outcome map:
+///   { "results": { "<eid>": { "result": "ok|drop|warning|retry" } } }
 #[instrument(skip(state, headers, body), fields(store_id))]
 pub async fn track_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<TrackingEnvelope>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     // 1. Resolve store_id from Kong-injected header
     let store_id = match headers.get("x-store-id") {
@@ -59,7 +64,7 @@ pub async fn track_handler(
 
     tracing::Span::current().record("store_id", store_id);
 
-    // 2. Rate limit check (Phase 3)
+    // 2. Rate limit check
     if state.store_limiter.is_limited(store_id) {
         metrics::counter!("ingestion_rate_limited_total").increment(1);
         return Err(AppError::RateLimited);
@@ -84,16 +89,27 @@ pub async fn track_handler(
         .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // 5. Acquire a Redis connection for this request
+    // 5. Decompress body (gzip / deflate / br / zstd / identity)
+    let content_encoding = headers
+        .get(axum::http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok());
+    let raw_bytes = decompress(body, content_encoding)?;
+    metrics::histogram!("ingestion_request_body_bytes").record(raw_bytes.len() as f64);
+
+    // 6. Parse JSON envelope
+    let envelope: TrackingEnvelope = serde_json::from_slice(&raw_bytes)
+        .map_err(|e| AppError::BadRequest(format!("invalid JSON: {e}")))?;
+
+    // 7. Acquire a Redis connection for this request
     let mut redis_conn = state
         .redis
         .get_multiplexed_async_connection()
         .await
         .map_err(AppError::from)?;
 
-    // 6. Delegate to pipeline
-    let accepted = process_envelope(
-        body,
+    // 8. Delegate to pipeline — returns per-event outcome map
+    let result: BatchResult = process_envelope(
+        envelope,
         store_id,
         source,
         ip,
@@ -104,5 +120,5 @@ pub async fn track_handler(
     )
     .await?;
 
-    Ok((StatusCode::ACCEPTED, Json(json!({ "accepted": accepted }))))
+    Ok(result)
 }

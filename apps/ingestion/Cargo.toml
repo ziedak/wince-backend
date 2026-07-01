@@ -32,6 +32,11 @@ aws-sdk-s3 = "1"
 anyhow = "1"
 # Phase 6 — Sink trait
 async-trait = "0.1"
+# Phase 1 — Body decompression
+bytes = "1"
+flate2 = "1"
+brotli = { version = "7", default-features = false, features = ["std"] }
+zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tokio-test = "0.4"
