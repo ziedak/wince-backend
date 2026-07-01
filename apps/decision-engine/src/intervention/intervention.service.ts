@@ -76,16 +76,25 @@ export class DecisionOrchestrator {
     const distinctId = event.uid ?? event.anon;
     const storeId = event.store_id;
     const sessionId = event.sid;
+    const customerId = event.customer_id;
+
+    // customer_id is required for identity-aware routing (cooldown, experiment bucketing).
+    // If enrichment failed to resolve a customer (null), skip the decision — the event
+    // will be reprocessed when the enrichment service recovers.
+    if (customerId === null) {
+      this.logger.debug({ storeId, distinctId }, 'Skipping decision: customer_id not resolved');
+      return;
+    }
 
     try {
       // ── 1. Policy ──────────────────────────────────────────────────────────
       const pol = await this.policy.getPolicy(storeId);
 
       // ── 2. Cooldown gate ───────────────────────────────────────────────────
-      const onCooldown = await this.cooldown.isOnCooldown(storeId, distinctId);
+      const onCooldown = await this.cooldown.isOnCooldown(storeId, customerId);
       if (onCooldown) {
         this.metrics.cooldownHit();
-        this.logger.debug({ storeId, distinctId }, 'Cooldown active — skipping');
+        this.logger.debug({ storeId, customerId }, 'Cooldown active — skipping');
         return;
       }
 
@@ -124,7 +133,7 @@ export class DecisionOrchestrator {
       const channel: InterventionChannel = ruleResult.channel;
 
       // ── 7. Experiment assignment ───────────────────────────────────────────
-      const variant = await this.experiment.getVariant(storeId, distinctId);
+      const variant = await this.experiment.getVariant(storeId, customerId);
 
       // ── 8. Discount code ───────────────────────────────────────────────────
       const intId = deterministicInterventionId(event.eid, distinctId);
@@ -143,6 +152,7 @@ export class DecisionOrchestrator {
         interventionId: intId,
         sessionId,
         storeId,
+        customerId,
         distinctId,
         type: ruleResult.type,
         channel,
@@ -150,7 +160,7 @@ export class DecisionOrchestrator {
         discountCode: discountCode ?? undefined,
         variant,
         decisionLatencyMs: Date.now() - t0,
-        inferenceConfidence: finalConfidence,
+        confidenceScore: finalConfidence,
       });
 
       // ── 10. Outbound delivery ──────────────────────────────────────────────
@@ -185,7 +195,7 @@ export class DecisionOrchestrator {
       await this.writer.markDelivered(intId, channel);
 
       // ── 12. Set cooldown AFTER delivery confirmed ──────────────────────────
-      await this.cooldown.setCooldown(storeId, distinctId, pol?.cooldownSeconds ?? 3600);
+      await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
 
       // ── 13. Metrics ────────────────────────────────────────────────────────
       this.metrics.interventionTotal(ruleResult.type, channel, variant);

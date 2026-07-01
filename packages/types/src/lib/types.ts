@@ -108,6 +108,8 @@ export interface InterventionRecord {
   interventionId: string;
   sessionId: string;
   storeId: number;
+  /** Canonical customer ID from customer_identities table */
+  customerId?: number;
   distinctId: string;
   type: InterventionType;
   channel: InterventionChannel;
@@ -117,8 +119,10 @@ export interface InterventionRecord {
   discountCode?: string;
   experimentId?: string;
   variant?: string;
+  /** Why this intervention was triggered, e.g. 'checkout_abandon', 'exit_intent' */
+  triggerReason?: string;
   decisionLatencyMs: number;
-  inferenceConfidence?: number;
+  confidenceScore?: number;
 }
 
 /**

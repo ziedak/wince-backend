@@ -13,7 +13,6 @@ export interface KafkaEnrichedEvent {
   store_id: number;
   timestamp: string;
   cart_value?: number;
-  customer_email?: string;
   properties?: Record<string, unknown>;
   // Enriched fields added by enrichment-session
   customer_id: number | null;
@@ -30,6 +29,7 @@ export interface KafkaEnrichedEvent {
  * Row shape written to ClickHouse.
  * Booleans are represented as UInt8 (0/1) for ClickHouse compatibility.
  * properties is serialised to JSON string.
+ * Schema mirrors packages/db/src/schema/clickhouse/events.sql exactly.
  */
 export interface ClickHouseRow {
   event_id: string;
@@ -47,7 +47,6 @@ export interface ClickHouseRow {
   rage_click_count: number;
   is_frustrated: number;
   session_available: number;
-  customer_email: string;
   properties: string;
 }
 
@@ -85,7 +84,6 @@ export function toClickHouseRow(event: KafkaEnrichedEvent): ClickHouseRow {
     rage_click_count: event.rage_click_count,
     is_frustrated: event.is_frustrated ? 1 : 0,
     session_available: event.session_available ? 1 : 0,
-    customer_email: event.customer_email ?? '',
     properties: JSON.stringify(event.properties ?? {}),
   };
 }

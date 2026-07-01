@@ -43,6 +43,11 @@ pub fn setup_metrics_recorder() -> PrometheusHandle {
             SKEW_BUCKETS,
         )
         .expect("invalid skew buckets")
+        .set_buckets_for_metric(
+            Matcher::Full("ingestion_bloom_dedup_batch_size".into()),
+            BATCH_BUCKETS,
+        )
+        .expect("invalid bloom batch buckets")
         .install_recorder()
         .expect("failed to install Prometheus metrics recorder")
 }

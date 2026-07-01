@@ -155,7 +155,8 @@ CREATE TABLE processed_events (
     event_id UUID PRIMARY KEY,
     processed_at TIMESTAMPTZ DEFAULT NOW()
 );
--- Auto-vacuum to keep size small (TTL 7 days)
+-- Auto-vacuum does NOT delete old rows. Add date partitioning + DROP PARTITION
+-- or rely solely on the Redis Bloom filter and drop this table entirely.
 CREATE INDEX idx_processed_events_processed_at ON processed_events(processed_at);
 
 -- ============================================================
@@ -200,17 +201,22 @@ Run these DDL statements against your ClickHouse cluster.
 -- ============================================================
 CREATE TABLE events_local ON CLUSTER default_cluster
 (
-    timestamp DateTime64(3) CODEC(Delta, ZSTD),
-    event_type LowCardinality(String),
-    session_id String,
-    distinct_id String,
-    store_id UInt32,
-    customer_email String CODEC(ZSTD),
-    cart_value Float64,
-    rage_click_count UInt8,
-    is_frustrated Bool,
-    properties JSON,
-    server_timestamp DateTime64(3) DEFAULT now64()
+    timestamp          DateTime64(3) CODEC(Delta, ZSTD),
+    event_id           String        CODEC(ZSTD),
+    event_type         LowCardinality(String),
+    session_id         String,
+    distinct_id        String,
+    store_id           UInt32,
+    customer_id        Nullable(UInt32),
+    cart_value         Float64,
+    lifetime_value     Float64,
+    email_consent      UInt8,
+    sms_consent        UInt8,
+    rage_click_count   UInt8,
+    is_frustrated      UInt8,
+    session_available  UInt8,
+    properties         JSON,
+    server_timestamp   DateTime64(3) DEFAULT now64()
 ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/events_local', '{replica}')
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (store_id, event_type, timestamp)
@@ -278,6 +284,8 @@ ClickHouse
     Materialized view: Updates automatically; query daily_abandonment_stats for fast reports.
 
     Sharding: Assumes a cluster with default_cluster. For single node, replace ReplicatedMergeTree with MergeTree and remove ON CLUSTER clauses.
+
+    Schema files: Canonical DDL lives in packages/db/src/schema/clickhouse/. Apply events.sql first, then intervention_events.sql, then experiment_results.sql.
 
 Index Strategy
 

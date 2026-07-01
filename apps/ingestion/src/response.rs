@@ -12,14 +12,13 @@ use std::collections::BTreeMap;
 
 /// Per-event outcome returned in the HTTP response.
 ///
-/// - `Ok`      — accepted and persisted to Kafka.
-/// - `Drop`    — rejected permanently; do not resubmit.
-///               Reasons: validation failure, duplicate, oversized, quota exceeded.
+/// - `Ok` — accepted and persisted to Kafka.
+/// - `Drop` — rejected permanently; do not resubmit.
+///   Reasons: validation failure, duplicate, oversized, quota exceeded.
 /// - `Warning` — accepted with reduced processing (e.g. illegal anon_id that
-///               would cause person-merge pollution). Do not resubmit.
-/// - `Retry`   — not persisted (e.g. Kafka unavailable). Safe to resubmit;
-///               a `Retry-After: 1` response header is added when any event
-///               has this outcome.
+///   would cause person-merge pollution). Do not resubmit.
+/// - `Retry` — not persisted (e.g. Kafka unavailable). Safe to resubmit;
+///   a `Retry-After: 1` response header is added when any event has this outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventOutcome {

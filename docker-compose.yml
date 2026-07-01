@@ -139,6 +139,45 @@ services:
       echo 'Topics created successfully!'
 
   # --- POSTGRESQL & PGBOUNCER ---
+
+  # One-shot: applies Drizzle migrations after postgres starts.
+  # Safe to re-run — drizzle-kit migrate is idempotent via __drizzle_migrations table.
+  db-migrate:
+    image: oven/bun:1
+    container_name: db-migrate
+    working_dir: /app
+    command: >
+      sh -c "cd packages/db && DATABASE_URL=postgresql://admin:password@postgres:5432/app_db bunx --bun drizzle-kit migrate"
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_started
+    restart: "no"
+
+  # One-shot: applies ClickHouse DDL on first startup.
+  # sed strips ON CLUSTER / ReplicatedMergeTree for single-node dev.
+  # Errors are non-fatal — tables already exist on subsequent runs.
+  clickhouse-init:
+    image: curlimages/curl:latest
+    container_name: clickhouse-init
+    depends_on:
+      clickhouse:
+        condition: service_started
+    volumes:
+      - ./packages/db/src/schema/clickhouse:/sql:ro
+      - ./packages/db/src/schema/clickhouse-features-view.sql:/sql/mv_customer_features.sql:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      sleep 5
+      for f in /sql/events.sql /sql/intervention_events.sql /sql/experiment_results.sql /sql/mv_customer_features.sql; do
+        echo "Applying $$f ..."
+        sed 's/ ON CLUSTER default_cluster//g; s/ReplicatedMergeTree([^)]*)/MergeTree()/g' "$$f" | \
+          curl -s http://clickhouse:8123/ --data-binary @- || echo "Warning: $$f returned error (may already exist)"
+      done
+      echo "ClickHouse init complete."
+    restart: "no"
+
   postgres:
     image: postgres:14-alpine
     container_name: postgres

@@ -39,13 +39,14 @@ export class InterventionWriter {
         channel: record.channel,
         value: record.value !== undefined ? String(record.value) : null,
         discountCode: record.discountCode ?? null,
+        triggerReason: record.triggerReason ?? null,
         delivered: false,
         experimentId: record.experimentId ?? null,
         variant: record.variant ?? null,
         decisionLatencyMs: record.decisionLatencyMs,
-        inferenceConfidence:
-          record.inferenceConfidence !== undefined
-            ? String(record.inferenceConfidence)
+        confidenceScore:
+          record.confidenceScore !== undefined
+            ? String(record.confidenceScore)
             : null,
       });
     } catch (err) {

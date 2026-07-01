@@ -1,6 +1,6 @@
 import { createLogger } from '@org/logger';
 import type { RedisClient } from '@org/redis_client';
-import { dailyBudget, sql, type Db } from '@org/db';
+import { dailyBudget, storeUsage, sql, type Db } from '@org/db';
 
 // Lua script: atomically initialise the key (NX + EX) then check-and-increment.
 // Returns 1 if the amount was reserved, 0 if budget would be exceeded.
@@ -74,6 +74,21 @@ export class BudgetService {
             totalDiscountGiven: sql`${dailyBudget.totalDiscountGiven} + ${String(amount)}`,
           },
         });
+
+      // Fire-and-forget: increment daily usage counters for billing dashboard.
+      this.db
+        .insert(storeUsage)
+        .values({ storeId, date, interventionsSent: 1, revenueRecovered: String(amount) })
+        .onConflictDoUpdate({
+          target: [storeUsage.storeId, storeUsage.date],
+          set: {
+            interventionsSent: sql`${storeUsage.interventionsSent} + 1`,
+            revenueRecovered: sql`${storeUsage.revenueRecovered} + ${String(amount)}`,
+          },
+        })
+        .catch((err) =>
+          this.logger.warn({ err, storeId }, 'BudgetService: store_usage increment failed (non-critical)'),
+        );
     } catch (err) {
       this.logger.warn({ err, storeId, amount }, 'BudgetService: reconcile failed (non-critical)');
     }

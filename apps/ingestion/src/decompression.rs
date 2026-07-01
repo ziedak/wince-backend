@@ -24,8 +24,8 @@ const DEFLATE_MAGIC: u8 = 0x78;
 
 fn detect(header: Option<&str>, body: &[u8]) -> Encoding {
     // Content-Encoding header takes precedence over magic byte sniffing.
-    match header {
-        Some(h) => match h.trim().to_lowercase().as_str() {
+    if let Some(h) = header {
+        match h.trim().to_lowercase().as_str() {
             "gzip" | "x-gzip" => return Encoding::Gzip,
             "deflate" => return Encoding::Deflate,
             "br" => return Encoding::Br,
@@ -35,8 +35,7 @@ fn detect(header: Option<&str>, body: &[u8]) -> Encoding {
                 tracing::warn!(encoding = other, "Unknown Content-Encoding — treating as identity");
                 return Encoding::Identity;
             }
-        },
-        None => {}
+        }
     }
 
     // Magic byte sniffing fallback when no header is present.

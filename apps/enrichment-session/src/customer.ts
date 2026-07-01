@@ -1,6 +1,6 @@
 import type { RedisClient } from '@org/redis_client';
 import { eq, and, type Db } from '@org/db';
-import { customers } from '@org/db';
+import { customers, customerIdentities } from '@org/db';
 import type { CustomerData } from './types.js';
 import type { EnrichmentMetrics } from './metrics.js';
 
@@ -74,7 +74,14 @@ export class CustomerService {
       }
     }
 
+    // Ensure identity mapping exists for this distinctId → customerId.
+    // ON CONFLICT DO NOTHING is safe: the row already exists if we reach here on a re-visit.
     if (customer) {
+      await this.db
+        .insert(customerIdentities)
+        .values({ storeId, customerId: customer.id, distinctId })
+        .onConflictDoNothing();
+
       await this.redis.safeSet(cacheKey, JSON.stringify(customer), CUSTOMER_CACHE_TTL);
     }
 

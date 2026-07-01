@@ -57,7 +57,7 @@ impl RestrictionStore {
         let guard = self.cache.read().await;
         guard
             .get(&store_id)
-            .map_or(false, |set| set.contains(event_type))
+            .is_some_and(|set| set.contains(event_type))
     }
 
     /// Replace the in-memory cache (called by the background refresh task).

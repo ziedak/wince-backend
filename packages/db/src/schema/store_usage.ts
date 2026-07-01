@@ -1,4 +1,4 @@
-import { bigint, date, integer, pgTable, primaryKey } from 'drizzle-orm/pg-core';
+import { bigint, date, integer, numeric, pgTable, primaryKey } from 'drizzle-orm/pg-core';
 import { stores } from './stores.js';
 
 export const storeUsage = pgTable(
@@ -11,6 +11,8 @@ export const storeUsage = pgTable(
     eventsCount: bigint('events_count', { mode: 'number' }).default(0),
     predictionsCount: bigint('predictions_count', { mode: 'number' }).default(0),
     notificationsSent: bigint('notifications_sent', { mode: 'number' }).default(0),
+    interventionsSent: bigint('interventions_sent', { mode: 'number' }).default(0),
+    revenueRecovered: numeric('revenue_recovered').default('0'),
   },
   (table) => [primaryKey({ columns: [table.storeId, table.date] })],
 );

@@ -89,20 +89,34 @@ async fn main() {
             error!("S3_FALLBACK_ENABLED=true but S3_FALLBACK_BUCKET is not set");
             std::process::exit(1);
         });
-        let s3_sink = sinks::s3::S3Sink::new(
+        // Provide WAL path only when WAL is enabled (default: true).
+        let wal_path = if config.wal_enabled {
+            Some(config.wal_db_path.clone())
+        } else {
+            None
+        };
+        let s3_sink = sinks::s3::S3Sink::new_with_wal(
             bucket,
             config.s3_endpoint_url.clone(),
             config.s3_region.clone(),
+            wal_path,
         )
         .await
         .unwrap_or_else(|e| {
             error!("Failed to create S3 fallback sink: {e}");
             std::process::exit(1);
         });
-        info!("S3 fallback sink enabled");
-        Arc::new(sinks::fallback::FallbackSink::new(
+        info!(
+            wal_enabled = config.wal_enabled,
+            advisory_enabled = config.advisory_fallback_enabled,
+            "S3 fallback sink enabled"
+        );
+        Arc::new(sinks::fallback::FallbackSink::new_with_health(
             Arc::new(sinks::kafka::KafkaSink::new(producer)),
             Arc::new(s3_sink),
+            health.clone(),
+            config.advisory_fallback_enabled,
+            config.kafka_health_threshold_ms,
         ))
     } else {
         Arc::new(sinks::kafka::KafkaSink::new(producer))

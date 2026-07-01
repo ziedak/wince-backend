@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use redis::aio::ConnectionLike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -14,6 +14,19 @@ use crate::rate_limiter::OverflowLimiter;
 use crate::response::{BatchResult, EventOutcome};
 use crate::restrictions::RestrictionStore;
 use crate::sinks::{Sink, SinkHeaders};
+
+// ─── Pipeline context (bundles all shared state for process_envelope) ─────────
+
+/// All per-request context that `process_envelope` needs beyond the envelope
+/// itself and the Redis connection. Eliminates the 5-arg tail of the function
+/// signature that was growing with every feature.
+pub struct PipelineContext<'a> {
+    pub config: &'a AppConfig,
+    pub sink: &'a Arc<dyn Sink>,
+    pub overflow_limiter: &'a OverflowLimiter,
+    pub quota_limiter: &'a QuotaLimiter,
+    pub restriction_store: &'a RestrictionStore,
+}
 
 // ─── Wire format from browser SDK ────────────────────────────────────────────
 
@@ -205,7 +218,7 @@ fn validate(event: &RawEvent) -> Result<(), AppError> {
             format!("field anon exceeds max length of {MAX_LEN}"),
         ));
     }
-    if event.uid.as_deref().map_or(false, |u| u.len() > MAX_LEN) {
+    if event.uid.as_deref().is_some_and(|u| u.len() > MAX_LEN) {
         return Err(AppError::BadRequest(
             format!("field uid exceeds max length of {MAX_LEN}"),
         ));
@@ -239,6 +252,96 @@ fn bloom_window_keys(prefix: &str, now: DateTime<Utc>) -> (String, String) {
     (today, yesterday)
 }
 
+/// Batch-check `eids` against the Bloom filter in a single Redis round-trip.
+///
+/// Returns a `HashSet` of eids that are **already present** in either today's
+/// or yesterday's window (i.e. confirmed duplicates). A Redis failure is
+/// treated as fail-open (empty duplicate set).
+async fn check_bloom<C>(
+    redis: &mut C,
+    bloom_key_prefix: &str,
+    eids: &[&str],
+) -> Result<HashSet<String>, AppError>
+where
+    C: ConnectionLike,
+{
+    if eids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let (today_key, yesterday_key) = bloom_window_keys(bloom_key_prefix, Utc::now());
+
+    // One pipeline: 2 × N BF.EXISTS commands — single RTT regardless of batch size.
+    let mut pipe = redis::pipe();
+    for &eid in eids {
+        pipe.cmd("BF.EXISTS").arg(&today_key).arg(eid);
+        pipe.cmd("BF.EXISTS").arg(&yesterday_key).arg(eid);
+    }
+
+    let results: Vec<i64> = pipe.query_async(redis).await?;
+
+    let mut duplicates = HashSet::new();
+    for (i, &eid) in eids.iter().enumerate() {
+        if results[i * 2] == 1 || results[i * 2 + 1] == 1 {
+            duplicates.insert(eid.to_string());
+        }
+    }
+
+    metrics::counter!("ingestion_bloom_batch_rtt_total").increment(1);
+    metrics::histogram!("ingestion_bloom_dedup_batch_size").record(eids.len() as f64);
+
+    Ok(duplicates)
+}
+
+/// Record produced eids in the Bloom filter with a single BF.INSERT call.
+///
+/// `BF.INSERT` with CAPACITY + ERROR + EXPANSION 0 is idempotent: it creates
+/// the filter with the configured capacity and FPP on first call, or uses the
+/// existing filter on subsequent calls. EXPANSION 0 disables auto-scaling
+/// (fixed-capacity, predictable memory).
+///
+/// Only eids that were **successfully produced** should be passed here — do
+/// not record eids that were dropped for validation, quota, or size reasons.
+async fn record_bloom<C>(
+    redis: &mut C,
+    bloom_key_prefix: &str,
+    capacity: u64,
+    fpp: f64,
+    eids: &[String],
+) -> Result<(), AppError>
+where
+    C: ConnectionLike,
+{
+    if eids.is_empty() {
+        return Ok(());
+    }
+    let (today_key, _) = bloom_window_keys(bloom_key_prefix, Utc::now());
+
+    // BF.INSERT creates the filter if absent (CAPACITY/ERROR set on creation),
+    // then adds all items atomically. EXPIRE refreshes the 48 h TTL.
+    let mut pipe = redis::pipe();
+    pipe.cmd("BF.INSERT")
+        .arg(&today_key)
+        .arg("CAPACITY")
+        .arg(capacity)
+        .arg("ERROR")
+        .arg(fpp)
+        .arg("EXPANSION")
+        .arg(0u64)
+        .arg("ITEMS");
+    for eid in eids {
+        pipe.arg(eid.as_str());
+    }
+    pipe.ignore();
+    pipe.cmd("EXPIRE")
+        .arg(&today_key)
+        .arg(BLOOM_KEY_TTL_SECS)
+        .ignore();
+
+    let (): () = pipe.query_async(redis).await?;
+    Ok(())
+}
+
+/// Per-event legacy path used when `batch_bloom_enabled = false`.
 async fn is_duplicate<C>(redis: &mut C, bloom_key_prefix: &str, eid: &str) -> Result<bool, AppError>
 where
     C: ConnectionLike,
@@ -248,7 +351,7 @@ where
     // Single pipeline round-trip:
     //   1. Check today's window   — exists_today
     //   2. Check yesterday's window — exists_yesterday (cross-midnight dedup)
-    //   3. Record in today's window
+    //   3. Record in today's window (only if not already present)
     //   4. Refresh TTL on today's key (48 h from last write for that date)
     let (exists_today, exists_yesterday, _added, _expire): (i64, i64, i64, i64) = redis::pipe()
         .cmd("BF.EXISTS").arg(&today_key).arg(eid)
@@ -263,6 +366,7 @@ where
 
 // ─── DLQ helper (Phase 7) ────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn send_to_dlq(
     sink: &dyn Sink,
     dlq_topic: &str,
@@ -292,16 +396,18 @@ pub async fn process_envelope<C>(
     store_id: u32,
     source: String,
     ip: String,
-    config: &AppConfig,
-    sink: &Arc<dyn Sink>,
-    overflow_limiter: &OverflowLimiter,
-    quota_limiter: &QuotaLimiter,
-    restriction_store: &RestrictionStore,
+    ctx: &PipelineContext<'_>,
     redis: &mut C,
 ) -> Result<BatchResult, AppError>
 where
     C: ConnectionLike,
 {
+    let config = ctx.config;
+    let sink = ctx.sink;
+    let overflow_limiter = ctx.overflow_limiter;
+    let quota_limiter = ctx.quota_limiter;
+    let restriction_store = ctx.restriction_store;
+
     let server_received_at = Utc::now().timestamp_millis();
     let mut result = BatchResult::new();
 
@@ -315,6 +421,23 @@ where
     // Clock skew metric
     metrics::histogram!("ingestion_clock_skew_seconds")
         .record((raw_skew.unsigned_abs() as f64) / 1_000.0);
+
+    // ── Batch bloom check (1 RTT for the whole envelope) ─────────────────────
+    // Collect all eids upfront so we can pipeline all BF.EXISTS checks.
+    let duplicate_eids: HashSet<String> = if config.batch_bloom_enabled {
+        let all_eids: Vec<&str> = envelope.events.iter().map(|e| e.eid.as_str()).collect();
+        match check_bloom(redis, &config.redis_bloom_key, &all_eids).await {
+            Ok(dups) => dups,
+            Err(e) => {
+                warn!(error = %e, "Batch bloom check failed — proceeding without dedup");
+                HashSet::new()
+            }
+        }
+    } else {
+        HashSet::new() // per-event path used below
+    };
+
+    let mut produced_eids: Vec<String> = Vec::new();
 
     for event in envelope.events {
         // Save eid before any field moves.
@@ -340,16 +463,26 @@ where
         }
 
         // ── Step 2: Bloom filter deduplication ───────────────────────────
-        match is_duplicate(redis, &config.redis_bloom_key, &eid).await {
-            Ok(true) => {
+        if config.batch_bloom_enabled {
+            if duplicate_eids.contains(&eid) {
                 debug!(eid = %eid, "Dropping duplicate event");
                 report_dropped_event("duplicate");
                 result.push(eid, EventOutcome::Drop, Some("duplicate"));
                 continue;
             }
-            Ok(false) => {}
-            Err(e) => {
-                warn!(eid = %eid, error = %e, "Redis dedup check failed, proceeding without dedup");
+        } else {
+            // Legacy per-event path (batch_bloom_enabled = false).
+            match is_duplicate(redis, &config.redis_bloom_key, &eid).await {
+                Ok(true) => {
+                    debug!(eid = %eid, "Dropping duplicate event");
+                    report_dropped_event("duplicate");
+                    result.push(eid, EventOutcome::Drop, Some("duplicate"));
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(eid = %eid, error = %e, "Redis dedup check failed, proceeding without dedup");
+                }
             }
         }
 
@@ -357,7 +490,7 @@ where
         // Accept the event but disable person processing to protect the
         // identity graph from SDK placeholder IDs.
         let force_disable_person_processing = is_illegal_id(&event.anon)
-            || event.uid.as_deref().map_or(false, is_illegal_id);
+            || event.uid.as_deref().is_some_and(is_illegal_id);
         if force_disable_person_processing {
             metrics::counter!("ingestion_illegal_id_total").increment(1);
             warn!(eid = %eid, anon = %event.anon, "Illegal distinct ID — person processing disabled");
@@ -519,6 +652,10 @@ where
                     .record(start.elapsed().as_secs_f64());
                 metrics::histogram!("ingestion_event_payload_bytes").record(payload.len() as f64);
                 metrics::counter!("ingestion_events_accepted_total").increment(1);
+                // Track eid for batch bloom write (only successfully produced events).
+                if config.batch_bloom_enabled {
+                    produced_eids.push(eid.clone());
+                }
                 if force_disable_person_processing {
                     result.push(eid, EventOutcome::Warning, Some("illegal_id"));
                 } else {
@@ -530,6 +667,21 @@ where
                 report_dropped_event("kafka_error");
                 result.push(eid, EventOutcome::Retry, Some("not_persisted"));
             }
+        }
+    }
+
+    // ── Batch bloom write (1 RTT for all produced eids) ──────────────────────
+    if config.batch_bloom_enabled && !produced_eids.is_empty() {
+        if let Err(e) = record_bloom(
+            redis,
+            &config.redis_bloom_key,
+            config.bloom_filter_capacity,
+            config.bloom_filter_fpp,
+            &produced_eids,
+        )
+        .await
+        {
+            warn!(error = %e, "Batch bloom record failed — duplicates may slip through");
         }
     }
 

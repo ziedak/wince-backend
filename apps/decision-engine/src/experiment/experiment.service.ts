@@ -37,16 +37,17 @@ export class ExperimentService {
   ) {}
 
   /**
-   * Returns the variant name for this (distinctId, storeId) pair.
+   * Returns the variant name for this (storeId, customerId) pair.
    * Returns 'control' when no active experiment exists.
-   * The assignment is deterministic and sticky: same ID → same bucket.
+   * The assignment is deterministic and sticky: same customer ID → same bucket.
+   * Uses customerId (integer) — not distinctId — so multi-device users stay in the same arm.
    */
-  async getVariant(storeId: number, distinctId: string): Promise<string> {
+  async getVariant(storeId: number, customerId: number): Promise<string> {
     try {
       const config = await this.loadConfig(storeId);
       if (!config) return 'control';
 
-      const bucket = fnv1a(`${distinctId}:${config.id}`) % 100;
+      const bucket = fnv1a(`${customerId}:${config.id}`) % 100;
 
       let cumulative = 0;
       for (const variant of config.variants) {
@@ -56,7 +57,7 @@ export class ExperimentService {
 
       return 'control';
     } catch (err) {
-      this.logger.warn({ err, storeId, distinctId }, 'ExperimentService: failed, using control');
+      this.logger.warn({ err, storeId, customerId }, 'ExperimentService: failed, using control');
       return 'control';
     }
   }

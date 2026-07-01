@@ -186,6 +186,47 @@ pub struct AppConfig {
     /// Seconds to wait for the Kafka producer to flush on graceful shutdown.
     #[envconfig(from = "KAFKA_DRAIN_TIMEOUT_SECS", default = "30")]
     pub kafka_drain_timeout_secs: u64,
+
+    // ─── Bloom filter tuning ──────────────────────────────────────────────────
+    /// Expected maximum distinct events per day per bloom window key.
+    /// A too-small value increases false-positive duplicate drops.
+    /// Default: 1 million events per day.
+    #[envconfig(from = "BLOOM_CAPACITY", default = "1000000")]
+    pub bloom_filter_capacity: u64,
+
+    /// Desired false-positive probability for the bloom filter (0 < fpp < 1).
+    /// Default: 0.1 % (one false duplicate drop per 1 000 unique events).
+    #[envconfig(from = "BLOOM_FPP", default = "0.001")]
+    pub bloom_filter_fpp: f64,
+
+    /// When true (default), all bloom checks for a batch are pipelined into a
+    /// single Redis round-trip instead of one round-trip per event.
+    /// Set to false for emergency rollback to per-event behaviour.
+    #[envconfig(from = "BATCH_BLOOM_ENABLED", default = "true")]
+    pub batch_bloom_enabled: bool,
+
+    // ─── S3 WAL ───────────────────────────────────────────────────────────────
+    /// When true (default when S3 fallback is enabled), events are written to a
+    /// local SQLite WAL before the in-memory S3 buffer. On restart, un-flushed
+    /// entries are replayed to S3, preventing data loss on process crash.
+    #[envconfig(from = "WAL_ENABLED", default = "true")]
+    pub wal_enabled: bool,
+
+    /// Path for the SQLite WAL database file.
+    #[envconfig(from = "WAL_DB_PATH", default = "/tmp/ingestion-s3-wal.db")]
+    pub wal_db_path: String,
+
+    // ─── Advisory Kafka health ────────────────────────────────────────────────
+    /// When true (default when S3 fallback is enabled), FallbackSink checks
+    /// Kafka health staleness before each send. If Kafka has not reported
+    /// healthy within kafka_health_threshold_ms, events route directly to S3.
+    #[envconfig(from = "ADVISORY_FALLBACK_ENABLED", default = "true")]
+    pub advisory_fallback_enabled: bool,
+
+    /// Milliseconds without a Kafka healthy report before the advisory fallback
+    /// activates. Default 15 s = 3× the rdkafka statistics.interval.ms (5 s).
+    #[envconfig(from = "KAFKA_HEALTH_THRESHOLD_MS", default = "15000")]
+    pub kafka_health_threshold_ms: i64,
 }
 
 impl AppConfig {

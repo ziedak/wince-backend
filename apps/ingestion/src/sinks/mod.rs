@@ -11,6 +11,7 @@ use crate::errors::AppError;
 pub mod fallback;
 pub mod kafka;
 pub mod s3;
+pub mod wal;
 
 /// Typed metadata attached to every produced message as Kafka headers.
 ///

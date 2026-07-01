@@ -9,7 +9,7 @@ use tracing::instrument;
 use crate::config::AppConfig;
 use crate::decompression::decompress;
 use crate::errors::AppError;
-use crate::pipeline::{process_envelope, TrackingEnvelope};
+use crate::pipeline::{process_envelope, PipelineContext, TrackingEnvelope};
 use crate::quota_limiter::QuotaLimiter;
 use crate::rate_limiter::{DistributedStoreLimiter, OverflowLimiter, StoreLimiter};
 use crate::restrictions::RestrictionStore;
@@ -131,16 +131,19 @@ pub async fn track_handler(
         .map_err(AppError::from)?;
 
     // 8. Delegate to pipeline — returns per-event outcome map
+    let ctx = PipelineContext {
+        config: &state.config,
+        sink: &state.sink,
+        overflow_limiter: &state.overflow_limiter,
+        quota_limiter: &state.quota_limiter,
+        restriction_store: &state.restriction_store,
+    };
     let result: BatchResult = process_envelope(
         envelope,
         store_id,
         source,
         ip,
-        &state.config,
-        &state.sink,
-        &state.overflow_limiter,
-        &state.quota_limiter,
-        &state.restriction_store,
+        &ctx,
         &mut redis_conn,
     )
     .await?;
