@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/types/tsconfig.lib.json" },
+    { "path": "../../packages/cache/tsconfig.lib.json" },
+    { "path": "../../packages/monitoring/tsconfig.lib.json" },
+    { "path": "../../packages/logger/tsconfig.lib.json" },
+    { "path": "../../packages/redis_client/tsconfig.lib.json" },
+    { "path": "../../packages/clickhouse_client/tsconfig.lib.json" },
+    { "path": "../../packages/http-client/tsconfig.lib.json" },
+    { "path": "../../packages/db/tsconfig.lib.json" }
+  ]
+}

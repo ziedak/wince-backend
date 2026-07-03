@@ -1,6 +1,8 @@
 import * as http from 'node:http';
 import type { DecisionMetrics } from './metrics.js';
 import type { TriggerHandler } from './trigger/trigger.handler.js';
+import type { RedisClient } from '@org/redis_client';
+import type { ConsumerState } from './kafka/decision.consumer.js';
 
 export class HealthServer {
   private readonly server: http.Server;
@@ -10,6 +12,9 @@ export class HealthServer {
     private readonly metrics: DecisionMetrics,
     private readonly port: number,
     private readonly triggerHandler?: TriggerHandler,
+    private readonly redis?: RedisClient,
+    private readonly consumerState?: ConsumerState,
+    private readonly internalHandler?: import('./internal/internal-handler.js').InternalHandler,
   ) {
     this.server = http.createServer((req, res) => {
       void this.handle(req, res);
@@ -25,6 +30,22 @@ export class HealthServer {
     }
 
     if (path === '/ready') {
+      if (this.redis && this.consumerState) {
+        try {
+          await this.redis.getRedis().ping();
+        } catch {
+          res
+            .writeHead(503, { 'Content-Type': 'application/json' })
+            .end(JSON.stringify({ status: 'not_ready', reason: 'redis_unavailable' }));
+          return;
+        }
+        if (!this.consumerState.subscribed) {
+          res
+            .writeHead(503, { 'Content-Type': 'application/json' })
+            .end(JSON.stringify({ status: 'not_ready', reason: 'kafka_not_subscribed' }));
+          return;
+        }
+      }
       res.writeHead(200).end('ready');
       return;
     }
@@ -40,6 +61,15 @@ export class HealthServer {
         this.triggerHandler.handle(req, res);
       } else {
         res.writeHead(501).end('trigger handler not configured');
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && (path === '/v1/internal/recalculate' || path === '/v1/internal/intervention/manual')) {
+      if (this.internalHandler) {
+        this.internalHandler.handle(req, res);
+      } else {
+        res.writeHead(501).end('internal handler not configured');
       }
       return;
     }

@@ -5,6 +5,7 @@ import type { RuleEngine } from '../rules/rules.service.js';
 import type { InferenceService } from '../inference/inference.service.js';
 import type { CustomerFeatures } from '../features/features.service.js';
 import type { Policy } from '../policy/policy.service.js';
+import type { DecisionMetrics } from '../metrics.js';
 
 /** Sessions with scores above this threshold proceed to the intervention pipeline. */
 export const RISK_THRESHOLD = 0.6;
@@ -35,6 +36,7 @@ export class RiskScorerService {
     private readonly rules: RuleEngine,
     private readonly inference: InferenceService,
     private readonly redis: RedisClient,
+    private readonly metrics: DecisionMetrics,
   ) {}
 
   async score(
@@ -58,6 +60,9 @@ export class RiskScorerService {
       inferenceResult !== null && inferenceResult.confidence > RISK_THRESHOLD
         ? inferenceResult.confidence
         : ruleResult.confidence;
+
+    // Track score distribution for observability (Prometheus histogram).
+    this.metrics.riskScoreObserved(score);
 
     return {
       score,

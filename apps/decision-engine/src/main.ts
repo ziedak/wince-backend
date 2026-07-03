@@ -27,6 +27,7 @@ import { InterventionWriter } from './intervention/intervention.writer.js';
 import { DecisionOrchestrator } from './intervention/intervention.service.js';
 import { TriggerHandler } from './trigger/trigger.handler.js';
 import { DecisionConsumer } from './kafka/decision.consumer.js';
+import { InternalHandler } from './internal/internal-handler.js';
 
 const logger = createLogger({ service: 'decision-engine' });
 
@@ -75,8 +76,8 @@ async function main(): Promise<void> {
   const discount = new DiscountService(db);
 
   // ── Phase 1: Risk scoring + concurrency guards ───────────────────────────
-  const riskScorer = new RiskScorerService(rules, inference, redisClient);
-  const lock = new LockService(redisClient);
+  const riskScorer = new RiskScorerService(rules, inference, redisClient, metrics);
+  const lock = new LockService(redisClient, metrics);
   const scheduler = new SchedulerService(redisClient);
   const sessionFeatures = new SessionFeaturesService(redisClient);
 
@@ -113,14 +114,23 @@ async function main(): Promise<void> {
   );
 
   const triggerHandler = new TriggerHandler(orchestrator, config.internalSecret, sessionFeatures);
-  const healthServer = new HealthServer(metrics, config.port, triggerHandler);
+  const internalHandler = new InternalHandler(orchestrator, sessionFeatures, config.internalSecret);
+
+  // Create consumer before HealthServer so its state ref can be passed for /ready checks.
+  const consumer = new DecisionConsumer(config, orchestrator, metrics);
+
+  const healthServer = new HealthServer(
+    metrics,
+    config.port,
+    triggerHandler,
+    redisClient,
+    consumer.state,
+    internalHandler,
+  );
 
   // ── Background workers ───────────────────────────────────────────────────
   const schedulerWorker = new SchedulerWorker(scheduler, sessionFeatures, orchestrator);
   const staleScanner = new StaleScannerService(redisClient, sessionFeatures, orchestrator, lock);
-
-  // ── Kafka consumer (Kafka-path trigger events) ───────────────────────────
-  const consumer = new DecisionConsumer(config, orchestrator, metrics);
 
   healthServer.start();
   logger.info({ port: config.port }, 'Health server listening');

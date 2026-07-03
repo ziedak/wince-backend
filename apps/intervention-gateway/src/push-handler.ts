@@ -53,7 +53,12 @@ export class PushHandler {
     const bodyPromise = readBody(res);
 
     void bodyPromise.then(async (rawBody) => {
-      if (!rawBody) return; // aborted
+      // Guard all response writes: DE's 100 ms AbortController may disconnect before we respond.
+      // In uWS, writing to an aborted response is undefined behavior in native code.
+      let aborted = false;
+      res.onAborted(() => { aborted = true; });
+
+      if (!rawBody || aborted) return;
 
       let sessionId: string;
       let payload: InShopPayload;
@@ -65,6 +70,7 @@ export class PushHandler {
         sessionId = body.sessionId;
         payload = body.payload as InShopPayload;
       } catch {
+        if (aborted) return;
         res.cork(() => res.writeStatus('400 Bad Request').end('invalid body'));
         return;
       }
@@ -77,6 +83,7 @@ export class PushHandler {
         const delivered = await this.sendWithAck(localSocket, payload);
         if (delivered) {
           this.metrics.pendingDelivered('ws');
+          if (aborted) return;
           res.cork(() =>
             res
               .writeStatus('200 OK')
@@ -94,6 +101,7 @@ export class PushHandler {
       if (remotePodIp && remotePodIp !== this.config.podIp) {
         const forwarded = await this.forwardToPod(remotePodIp, sessionId, payload);
         if (forwarded) {
+          if (aborted) return;
           res.cork(() =>
             res
               .writeStatus('200 OK')
@@ -107,6 +115,7 @@ export class PushHandler {
       // ── 3. Store as pending ───────────────────────────────────────────────
       await this.storePending(sessionId, payload);
       this.metrics.pendingStored();
+      if (aborted) return;
       res.cork(() =>
         res
           .writeStatus('202 Accepted')

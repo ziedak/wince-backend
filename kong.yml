@@ -152,10 +152,14 @@ consumers:
     keyauth_credentials:
       - key: 'test-api-key-123'
 
-  # Consumer for admin JWT
+  # Consumer for admin JWT (RS256 — public key verified by Kong)
   - username: admin-api
     custom_id: admin-1
     jwt_secrets:
-      - secret: 'your-256-bit-secret-change-me'
-        algorithm: HS256
-        key: 'admin-key'
+      - algorithm: RS256
+        key: admin-key
+        # Base64-decoded public key is set here for dev. Rotate via Kong Admin API in production.
+        rsa_public_key: |
+          -----BEGIN PUBLIC KEY-----
+          REPLACE_WITH_DEV_RS256_PUBLIC_KEY
+          -----END PUBLIC KEY-----

@@ -272,11 +272,34 @@ services:
     ports:
       - "3001:3001"
     restart: unless-stopped
-  # admin-api:
-  #   image: alpine:3.18
-  #   container_name: admin-api
-  #   command: [ "sleep", "infinity" ]
-  #   restart: unless-stopped
+  admin-api:
+    build:
+      context: .
+      dockerfile: apps/admin-api/Dockerfile
+    container_name: admin-api
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      kong:
+        condition: service_healthy
+    environment:
+      PORT: 3008
+      DATABASE_URL: postgresql://admin:password@pgbouncer:6432/app_db
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+      INTERNAL_SECRET: dev-internal-secret
+      DECISION_ENGINE_URL: http://decision-engine:3007
+      KONG_ADMIN_URL: http://kong:8001
+      # Generate dev RS256 keypair: openssl genrsa | base64 -w0 → JWT_PRIVATE_KEY
+      #                              openssl rsa -pubout | base64 -w0 → JWT_PUBLIC_KEY
+      JWT_PRIVATE_KEY: ""
+      JWT_PUBLIC_KEY: ""
+      LOG_LEVEL: info
+    ports:
+      - "3008:3008"
+    restart: unless-stopped
 
   decision-engine:
     build:

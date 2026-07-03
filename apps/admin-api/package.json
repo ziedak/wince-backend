@@ -1,0 +1,16 @@
+{
+  "name": "@org/admin-api",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "@org/cache": "workspace:*",
+    "@org/clickhouse_client": "workspace:*",
+    "@org/db": "workspace:*",
+    "@org/http-client": "workspace:*",
+    "@org/logger": "workspace:*",
+    "@org/monitoring": "workspace:*",
+    "@org/redis_client": "workspace:*",
+    "@org/types": "workspace:*",
+    "@org/utils": "workspace:*"
+  }
+}

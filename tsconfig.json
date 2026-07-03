@@ -59,6 +59,9 @@
     },
     {
       "path": "./apps/decision-engine"
+    },
+    {
+      "path": "./apps/admin-api"
     }
   ]
 }

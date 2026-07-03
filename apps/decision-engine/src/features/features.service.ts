@@ -40,6 +40,7 @@ export class FeatureService {
       );
     } catch (err) {
       this.logger.warn({ err, storeId, distinctId }, 'FeatureService: failed, returning zero features');
+      this.metrics.featureDegraded();
       return { ...ZERO_FEATURES };
     }
   }
@@ -66,6 +67,7 @@ export class FeatureService {
     } catch (err) {
       this.metrics.dbOperation('clickhouse', 'feature_fetch_error', Date.now() - start);
       this.logger.warn({ err, storeId, distinctId }, 'FeatureService: ClickHouse query failed');
+      this.metrics.featureDegraded();
       return { ...ZERO_FEATURES };
     }
   }

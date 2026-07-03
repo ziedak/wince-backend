@@ -2,6 +2,7 @@ import { createLogger } from '@org/logger';
 import { createHash } from 'node:crypto';
 import type {
   EnrichedEvent,
+  InterventionType,
   InterventionChannel,
   InShopInterventionType,
   OffShopInterventionType,
@@ -33,11 +34,13 @@ const NEEDS_DISCOUNT_CODE = new Set<string>(['price_reduction', 'free_shipping']
  */
 function deterministicInterventionId(eid: string, distinctId: string): string {
   const hash = createHash('sha256').update(`${eid}|${distinctId}`).digest('hex');
+  // RFC 4122 variant nibble must be 8, 9, a, or b (top 2 bits = 10).
+  const variantNibble = (['8', '9', 'a', 'b'] as const)[parseInt(hash[16]!, 16) & 3]!;
   return [
     hash.slice(0, 8),
     hash.slice(8, 12),
     `5${hash.slice(13, 16)}`,
-    hash.slice(16, 20),
+    `${variantNibble}${hash.slice(17, 20)}`,
     hash.slice(20, 32),
   ].join('-');
 }
@@ -91,6 +94,9 @@ export class DecisionOrchestrator {
       return;
     }
 
+    // Declared outside try so it is accessible in the catch block for cleanup.
+    let lockHeartbeat: NodeJS.Timeout | undefined;
+
     try {
       // ── Phase 1: Risk Scoring ──────────────────────────────────────────────
 
@@ -143,11 +149,19 @@ export class DecisionOrchestrator {
         return;
       }
 
+      // Renew the lock every 5 s to prevent TTL expiry during slow pipeline execution
+      // (outbound calls and DB writes can take 50–200 ms; 30 s TTL is sufficient under normal
+      // load but the heartbeat provides a safety net under degraded conditions).
+      lockHeartbeat = setInterval(() => {
+        void this.lock.renewSessionLock(sessionId).catch(() => {});
+      }, 5_000);
+
       // 9. Cart-level lock — prevents duplicate interventions across browser tabs
       const cartId = (event.props as Record<string, unknown> | undefined)?.['cart_id'] as string | undefined;
       if (cartId !== undefined) {
         const cartLocked = await this.lock.acquireCartLock(cartId);
         if (!cartLocked) {
+          clearInterval(lockHeartbeat);
           this.logger.debug({ sessionId, cartId }, 'Cart lock contention — intervention in flight for cart');
           return;
         }
@@ -158,6 +172,7 @@ export class DecisionOrchestrator {
       const maxBudget = pol?.maxDailyBudgetAmount ?? 100;
       const budgetOk = await this.budget.checkAndReserve(storeId, discountValue, maxBudget);
       if (!budgetOk) {
+        clearInterval(lockHeartbeat);
         this.metrics.budgetExhausted();
         this.logger.info({ storeId }, 'Budget exhausted — skipping');
         return;
@@ -180,8 +195,9 @@ export class DecisionOrchestrator {
         );
       }
 
-      // 13. Write record (delivered=false) BEFORE outbound attempt
-      await this.writer.write({
+      // 13. Write record (delivered=false) — fire-and-forget so outbound delivery is not
+      // blocked by the DB insert. Audit integrity is preserved via the Kafka DLQ in writer.
+      void this.writer.write({
         interventionId: intId,
         sessionId,
         storeId,
@@ -195,6 +211,8 @@ export class DecisionOrchestrator {
         triggerReason: event.t,
         decisionLatencyMs: Date.now() - t0,
         confidenceScore: riskScore.score,
+      }).catch((err: unknown) => {
+        this.logger.error({ err, interventionId: intId }, 'DecisionOrchestrator: writer.write fire-and-forget error');
       });
 
       // 14. Outbound delivery
@@ -251,8 +269,131 @@ export class DecisionOrchestrator {
         },
         'Intervention dispatched',
       );
+      clearInterval(lockHeartbeat);
     } catch (err) {
+      clearInterval(lockHeartbeat);
       this.logger.error({ err, storeId, sessionId }, 'DecisionOrchestrator: unexpected error (non-fatal)');
+    }
+  }
+
+  /**
+   * Bypasses Phase 1 (risk scoring) and directly executes Phase 2 (intervention pipeline)
+   * with admin-provided parameters. Respects budget and cooldown unless overrideCooldown.
+   * Used by the internal admin endpoint POST /v1/internal/intervention/manual.
+   */
+  async manualDecide(params: {
+    sessionId: string;
+    storeId: number;
+    customerId: number;
+    distinctId: string;
+    email?: string;
+    emailConsent: boolean;
+    smsConsent: boolean;
+    type: InterventionType;
+    channel: InterventionChannel;
+    value: number;
+    overrideCooldown?: boolean;
+  }): Promise<{ interventionId: string | null; status: 'sent' | 'skipped' | 'error'; reason?: string }> {
+    const t0 = Date.now();
+    const { sessionId, storeId, customerId, distinctId, email, emailConsent, smsConsent, type, channel, value, overrideCooldown } = params;
+
+    try {
+      // Cooldown + sent-guard (skip if admin explicitly overrides)
+      if (!overrideCooldown) {
+        const onCooldown = await this.cooldown.isOnCooldown(storeId, customerId);
+        if (onCooldown) {
+          return { interventionId: null, status: 'skipped', reason: 'cooldown_active' };
+        }
+        if (await this.lock.isSent(sessionId)) {
+          return { interventionId: null, status: 'skipped', reason: 'already_sent' };
+        }
+      }
+
+      // Acquire session lock
+      const sessionLocked = await this.lock.acquireSessionLock(sessionId);
+      if (!sessionLocked) {
+        return { interventionId: null, status: 'skipped', reason: 'lock_contention' };
+      }
+
+      // Policy (for budget limit)
+      const pol = await this.policy.getPolicy(storeId);
+
+      // Budget gate
+      const budgetOk = await this.budget.checkAndReserve(storeId, value, pol?.maxDailyBudgetAmount ?? 100);
+      if (!budgetOk) {
+        return { interventionId: null, status: 'skipped', reason: 'budget_exhausted' };
+      }
+
+      // Experiment variant (fixed to control for manual admin-triggered interventions)
+      const variant = 'control';
+
+      // Deterministic ID using a unique manual eid
+      const manualEid = `manual-${sessionId}-${Date.now()}-${customerId}`;
+      const intId = deterministicInterventionId(manualEid, distinctId);
+
+      // Discount code for monetary in-shop offers
+      let discountCode: string | null = null;
+      if (NEEDS_DISCOUNT_CODE.has(type) && channel === 'in_shop') {
+        discountCode = await this.discount.generateCode(storeId, sessionId, value, intId);
+      }
+
+      // Write audit record (fire-and-forget)
+      void this.writer.write({
+        interventionId: intId,
+        sessionId,
+        storeId,
+        customerId,
+        distinctId,
+        type,
+        channel,
+        value,
+        discountCode: discountCode ?? undefined,
+        variant,
+        triggerReason: 'manual_admin',
+        decisionLatencyMs: Date.now() - t0,
+        confidenceScore: 1.0,
+      }).catch((err: unknown) => {
+        this.logger.error({ err, interventionId: intId }, 'manualDecide: writer.write error');
+      });
+
+      // Outbound delivery
+      if (channel === 'in_shop') {
+        const payload: InShopPayload = {
+          interventionId: intId,
+          type: type as InShopInterventionType,
+          value,
+          discountCode: discountCode ?? undefined,
+        };
+        await this.outbound.route('in_shop', sessionId, payload);
+      } else {
+        const payload: NotificationRequest = {
+          interventionId: intId,
+          sessionId,
+          storeId,
+          distinctId,
+          type: type as OffShopInterventionType,
+          templateId: `${type}_default`,
+          email,
+          emailConsent,
+          smsConsent,
+          templateData: { discountCode: discountCode ?? undefined },
+        };
+        await this.outbound.route('off_shop', sessionId, payload);
+      }
+
+      await this.writer.markDelivered(intId, channel);
+      await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
+      await this.lock.markSent(sessionId);
+      this.metrics.interventionTotal(type, channel, variant);
+
+      this.logger.info(
+        { interventionId: intId, type, channel, storeId, sessionId, latencyMs: Date.now() - t0 },
+        'Manual intervention dispatched',
+      );
+      return { interventionId: intId, status: 'sent' };
+    } catch (err) {
+      this.logger.error({ err, storeId, sessionId }, 'manualDecide: unexpected error');
+      return { interventionId: null, status: 'error', reason: String(err) };
     }
   }
 }

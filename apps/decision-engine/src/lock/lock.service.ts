@@ -1,5 +1,6 @@
 import { createLogger } from '@org/logger';
 import type { RedisClient } from '@org/redis_client';
+import type { DecisionMetrics } from '../metrics.js';
 
 const SESSION_LOCK_TTL = 30;   // seconds — covers full intervention pipeline execution
 const CART_LOCK_TTL = 300;     // 5 minutes — multi-tab protection per cart
@@ -18,7 +19,10 @@ const SENT_TTL = 300;          // 5 minutes — prevents re-send after session l
 export class LockService {
   private readonly logger = createLogger({ service: 'LockService' });
 
-  constructor(private readonly redis: RedisClient) {}
+  constructor(
+    private readonly redis: RedisClient,
+    private readonly metrics: DecisionMetrics,
+  ) {}
 
   /**
    * Acquires a per-session intervention lock (SET NX EX).
@@ -37,6 +41,7 @@ export class LockService {
       return result === 'OK';
     } catch (err) {
       this.logger.warn({ err, sessionId }, 'LockService: session lock check failed, allowing through');
+      this.metrics.lockAcquireFailed('session');
       return true; // fail-open
     }
   }
@@ -58,6 +63,7 @@ export class LockService {
       return result === 'OK';
     } catch (err) {
       this.logger.warn({ err, cartId }, 'LockService: cart lock check failed, allowing through');
+      this.metrics.lockAcquireFailed('cart');
       return true; // fail-open
     }
   }
@@ -79,6 +85,18 @@ export class LockService {
     } catch (err) {
       this.logger.warn({ err, sessionId }, 'LockService: isSent check failed, assuming not sent');
       return false; // fail-open: allow the intervention attempt
+    }
+  }
+
+  /**
+   * Renews the session lock TTL. Called by the heartbeat interval in the orchestrator
+   * to prevent lock expiry during slow pipeline execution (e.g. degraded Postgres/outbound).
+   */
+  async renewSessionLock(sessionId: string): Promise<void> {
+    try {
+      await this.redis.getRedis().expire(`lock:intervention:${sessionId}`, SESSION_LOCK_TTL);
+    } catch (err) {
+      this.logger.warn({ err, sessionId }, 'LockService: renewSessionLock failed (non-fatal)');
     }
   }
 }

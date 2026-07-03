@@ -11,6 +11,8 @@ export const adminUsers = pgTable('admin_users', {
   failedLoginAttempts: integer('failed_login_attempts').default(0),
   /** If set and in the future, login is blocked (brute-force lockout) */
   lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  /** Incremented on role change or account disable; included in JWT claims for immediate revocation */
+  tokenVersion: integer('token_version').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 

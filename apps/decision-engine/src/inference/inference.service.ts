@@ -1,4 +1,5 @@
 import { createLogger } from '@org/logger';
+import { circuitBreaker, ConsecutiveBreaker, handleAll, BrokenCircuitError } from 'cockatiel';
 import type { CustomerFeatures } from '../features/features.service.js';
 import type { DecisionMetrics } from '../metrics.js';
 
@@ -11,12 +12,25 @@ export class InferenceService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private session: any | null = null;
   private readonly ready: Promise<void>;
+  /** Cockatiel circuit breaker — opens after 5 consecutive ONNX failures, resets after 5 min. */
+  private readonly onnxBreaker = circuitBreaker(handleAll, {
+    halfOpenAfter: 5 * 60_000,
+    breaker: new ConsecutiveBreaker(5),
+  });
 
   constructor(
     private readonly modelPath: string | undefined,
     private readonly metrics: DecisionMetrics,
   ) {
     this.ready = this.init();
+    this.onnxBreaker.onBreak(() => {
+      this.logger.warn('InferenceService: ONNX circuit opened — skipping inference for 5 min');
+      this.metrics.onnxCircuitStateChange('open');
+    });
+    this.onnxBreaker.onReset(() => {
+      this.logger.info('InferenceService: ONNX circuit closed — inference resumed');
+      this.metrics.onnxCircuitStateChange('closed');
+    });
   }
 
   private async init(): Promise<void> {
@@ -47,14 +61,19 @@ export class InferenceService {
 
     const start = Date.now();
     try {
-      const result = await Promise.race([
-        this.runOnnx(features),
-        this.timeout(50),
-      ]);
+      const result = await this.onnxBreaker.execute(() =>
+        Promise.race([this.runOnnx(features), this.timeout(50)]),
+      );
       this.metrics.onnxInferenceDuration(Date.now() - start);
       return result;
     } catch (err) {
-      this.logger.warn({ err }, 'InferenceService: inference error');
+      if (err instanceof BrokenCircuitError) {
+        // Circuit is open — fail silently; already logged on circuit-open event.
+        return null;
+      }
+      this.logger.warn({ err }, 'InferenceService: inference error — falling back to rules');
+      // Model was loaded but inference failed/timed out: track for reliability monitoring.
+      this.metrics.onnxFallback();
       return null;
     }
   }
@@ -64,11 +83,20 @@ export class InferenceService {
     type OrtTensor = InstanceType<typeof ort.Tensor>;
     type RunOutput = Record<string, OrtTensor>;
 
+    // Feature vector layout (must match ONNX model input schema):
+    //   [0] abandonment_rate_7d     — 7-day cart abandonment rate for this customer
+    //   [1] avg_cart_value_30d      — 30-day average cart value for this customer
+    //   [2] SESSION_PAGE_DEPTH      — placeholder: page depth in current session (not yet computed)
+    //   [3] SESSION_TIME_ON_PAGE_S  — placeholder: time on page in seconds (not yet computed)
+    // TODO: populate [2] and [3] once enrichment-session exports these fields.
+    const SESSION_PAGE_DEPTH_PLACEHOLDER = 0;
+    const SESSION_TIME_ON_PAGE_S_PLACEHOLDER = 0;
+
     const inputData = new Float32Array([
       features.abandonment_rate_7d,
       features.avg_cart_value_30d,
-      0, // placeholder
-      0, // placeholder
+      SESSION_PAGE_DEPTH_PLACEHOLDER,
+      SESSION_TIME_ON_PAGE_S_PLACEHOLDER,
     ]);
 
     const inputTensor = new ort.Tensor('float32', inputData, [1, 4]);
@@ -78,7 +106,17 @@ export class InferenceService {
     const confidenceTensor = output['confidence'];
     if (!confidenceTensor) throw new Error('ONNX output missing "confidence" node');
 
-    const confidence = (confidenceTensor.data as Float32Array)[0] ?? 0;
+    const rawConfidence = (confidenceTensor.data as Float32Array)[0] ?? 0;
+
+    // Clamp to [0, 1]. Values outside this range indicate a model misconfiguration.
+    if (rawConfidence < 0 || rawConfidence > 1) {
+      this.logger.warn(
+        { rawConfidence },
+        'InferenceService: ONNX confidence outside [0,1] — clamping; check model input schema',
+      );
+    }
+    const confidence = Math.max(0, Math.min(1, rawConfidence));
+
     return { confidence };
   }
 

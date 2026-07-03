@@ -80,6 +80,7 @@
     "@org/monitoring": "*",
     "@org/redis_client": "*",
     "@org/types": "*",
+    "cockatiel": "4.0.0",
     "onnxruntime-node": "^1.18.0"
   }
 }
