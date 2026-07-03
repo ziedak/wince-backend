@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import type { DecisionMetrics } from './metrics.js';
+import type { TriggerHandler } from './trigger/trigger.handler.js';
 
 export class HealthServer {
   private readonly server: http.Server;
@@ -8,6 +9,7 @@ export class HealthServer {
   constructor(
     private readonly metrics: DecisionMetrics,
     private readonly port: number,
+    private readonly triggerHandler?: TriggerHandler,
   ) {
     this.server = http.createServer((req, res) => {
       void this.handle(req, res);
@@ -30,6 +32,15 @@ export class HealthServer {
     if (path === '/metrics') {
       const body = await this.metrics.getMetrics();
       res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' }).end(body);
+      return;
+    }
+
+    if (req.method === 'POST' && path === '/v1/trigger') {
+      if (this.triggerHandler) {
+        this.triggerHandler.handle(req, res);
+      } else {
+        res.writeHead(501).end('trigger handler not configured');
+      }
       return;
     }
 

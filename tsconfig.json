@@ -50,6 +50,15 @@
     },
     {
       "path": "./apps/frontend"
+    },
+    {
+      "path": "./apps/intervention-gateway"
+    },
+    {
+      "path": "./apps/notification-service"
+    },
+    {
+      "path": "./apps/decision-engine"
     }
   ]
 }

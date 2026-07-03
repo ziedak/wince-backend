@@ -6,6 +6,7 @@ import type { Config } from './config.js';
 import type { Enricher } from './enricher.js';
 import type { IdempotencyService } from './idempotency.js';
 import type { EnrichmentMetrics } from './metrics.js';
+import type { TriggerForwarder } from './trigger-forwarder.js';
 import type { RawEvent } from './types.js';
 
 const RETRY_DELAYS = [100, 200, 400];
@@ -55,6 +56,7 @@ export class EnrichmentConsumer {
     private readonly enricher: Enricher,
     private readonly idempotency: IdempotencyService,
     private readonly metrics: EnrichmentMetrics,
+    private readonly triggerForwarder?: TriggerForwarder,
   ) {
     this.logger = createLogger({ service: 'EnrichmentConsumer' });
   }
@@ -175,6 +177,8 @@ export class EnrichmentConsumer {
               produced = true;
               // Mark idempotent only after confirmed produce — preserves at-least-once
               await this.idempotency.markProcessed(raw.event_id);
+              // Fast-path: forward trigger events directly to decision-engine (fire-and-forget)
+              void this.triggerForwarder?.maybeForward(result.event);
             } catch (err) {
               this.logger.error({ err, event_id: raw.event_id }, 'Produce failed after retries, sending to DLQ');
               await sendToDlq(rawStr, 'produce_failed', key);

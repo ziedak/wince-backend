@@ -12,13 +12,14 @@ import type { PolicyService } from '../policy/policy.service.js';
 import type { CooldownService } from '../cooldown/cooldown.service.js';
 import type { BudgetService } from '../budget/budget.service.js';
 import type { FeatureService } from '../features/features.service.js';
-import type { RuleEngine } from '../rules/rules.service.js';
-import type { InferenceService } from '../inference/inference.service.js';
+import type { RiskScorerService } from '../risk/risk-scorer.service.js';
 import type { ExperimentService } from '../experiment/experiment.service.js';
 import type { DiscountService } from '../discount/discount.service.js';
 import type { OutboundService } from '../outbound/outbound.service.js';
 import type { InterventionWriter } from './intervention.writer.js';
 import type { DecisionMetrics } from '../metrics.js';
+import type { LockService } from '../lock/lock.service.js';
+import type { SchedulerService } from '../scheduler/scheduler.service.js';
 
 /** In-shop types that carry a monetary offer → need a generated discount code. */
 const NEEDS_DISCOUNT_CODE = new Set<string>(['price_reduction', 'free_shipping']);
@@ -42,15 +43,18 @@ function deterministicInterventionId(eid: string, distinctId: string): string {
 }
 
 /**
- * Orchestrates the full decision pipeline for a single enriched event.
+ * Orchestrates the two-phase decision pipeline for a single enriched event.
  *
- * Pipeline:
- *   policy → cooldown gate → budget gate → features
- *   → Promise.all(rules, inference) → merge decision
- *   → experiment assignment → discount code
- *   → writer.write(delivered=false) → outbound.route
- *   → writer.markDelivered(true)
- *   → cooldown.setCooldown
+ * Phase 1 — Risk Scoring:
+ *   policy → cooldown gate → features
+ *   → RiskScorerService.score() (rules + ONNX in parallel)
+ *   → write risk:{sid} → threshold check
+ *   → score < 0.6: schedule re-evaluation and return
+ *
+ * Phase 2 — Intervention Pipeline:
+ *   isSent guard → session lock → cart lock → budget gate
+ *   → experiment → discount → write(delivered=false)
+ *   → outbound → markDelivered → setCooldown → markSent → metrics
  *
  * Never throws — all errors are caught and logged.
  */
@@ -62,13 +66,14 @@ export class DecisionOrchestrator {
     private readonly cooldown: CooldownService,
     private readonly budget: BudgetService,
     private readonly features: FeatureService,
-    private readonly rules: RuleEngine,
-    private readonly inference: InferenceService,
+    private readonly riskScorer: RiskScorerService,
     private readonly experiment: ExperimentService,
     private readonly discount: DiscountService,
     private readonly outbound: OutboundService,
     private readonly writer: InterventionWriter,
     private readonly metrics: DecisionMetrics,
+    private readonly lock: LockService,
+    private readonly scheduler: SchedulerService,
   ) {}
 
   async decide(event: EnrichedEvent): Promise<void> {
@@ -79,18 +84,20 @@ export class DecisionOrchestrator {
     const customerId = event.customer_id;
 
     // customer_id is required for identity-aware routing (cooldown, experiment bucketing).
-    // If enrichment failed to resolve a customer (null), skip the decision — the event
-    // will be reprocessed when the enrichment service recovers.
+    // If enrichment failed to resolve a customer (null), skip — the scheduler or stale
+    // scanner will retry once the session hash is fully populated.
     if (customerId === null) {
       this.logger.debug({ storeId, distinctId }, 'Skipping decision: customer_id not resolved');
       return;
     }
 
     try {
-      // ── 1. Policy ──────────────────────────────────────────────────────────
+      // ── Phase 1: Risk Scoring ──────────────────────────────────────────────
+
+      // 1. Policy
       const pol = await this.policy.getPolicy(storeId);
 
-      // ── 2. Cooldown gate ───────────────────────────────────────────────────
+      // 2. Cooldown gate — fast Redis check before running inference
       const onCooldown = await this.cooldown.isOnCooldown(storeId, customerId);
       if (onCooldown) {
         this.metrics.cooldownHit();
@@ -98,7 +105,55 @@ export class DecisionOrchestrator {
         return;
       }
 
-      // ── 3. Budget gate ─────────────────────────────────────────────────────
+      // 3. Features (needed by both rule engine and ONNX model)
+      const feats = await this.features.getFeatures(storeId, distinctId);
+
+      // 4. Risk scoring — rules engine + ONNX inference in parallel
+      const riskScore = await this.riskScorer.score(event, feats, pol);
+      if (!riskScore) {
+        // Rules gate: cart too low, no valid delivery channel, etc.
+        return;
+      }
+
+      // 5. Persist score for observability (fire-and-forget; non-blocking)
+      void this.riskScorer.writeScore(sessionId, riskScore.score);
+
+      // 6. Threshold gate
+      if (!riskScore.shouldIntervene) {
+        await this.scheduler.schedule(sessionId, riskScore.score);
+        this.logger.debug(
+          { sessionId, score: riskScore.score },
+          'Risk below threshold — scheduled re-evaluation',
+        );
+        return;
+      }
+
+      // ── Phase 2: Intervention Pipeline ────────────────────────────────────
+
+      // 7. isSent guard — cheap check before acquiring the session lock
+      if (await this.lock.isSent(sessionId)) {
+        this.logger.debug({ sessionId }, 'Intervention already sent in this window — skipping');
+        return;
+      }
+
+      // 8. Session-level lock — prevents concurrent decisions for the same session
+      const sessionLocked = await this.lock.acquireSessionLock(sessionId);
+      if (!sessionLocked) {
+        this.logger.debug({ sessionId }, 'Session lock contention — another decision in flight');
+        return;
+      }
+
+      // 9. Cart-level lock — prevents duplicate interventions across browser tabs
+      const cartId = (event.props as Record<string, unknown> | undefined)?.['cart_id'] as string | undefined;
+      if (cartId !== undefined) {
+        const cartLocked = await this.lock.acquireCartLock(cartId);
+        if (!cartLocked) {
+          this.logger.debug({ sessionId, cartId }, 'Cart lock contention — intervention in flight for cart');
+          return;
+        }
+      }
+
+      // 10. Budget gate — reserved only once we know an intervention will be sent
       const discountValue = pol?.discountValue ?? 10;
       const maxBudget = pol?.maxDailyBudgetAmount ?? 100;
       const budgetOk = await this.budget.checkAndReserve(storeId, discountValue, maxBudget);
@@ -108,67 +163,46 @@ export class DecisionOrchestrator {
         return;
       }
 
-      // ── 4. Features (needed by both rules + inference) ─────────────────────
-      const feats = await this.features.getFeatures(storeId, distinctId);
+      const channel: InterventionChannel = riskScore.channel;
 
-      // ── 5. Rules + Inference in parallel ───────────────────────────────────
-      const [ruleResult, inferenceResult] = await Promise.all([
-        Promise.resolve(this.rules.evaluate(event, feats, pol)),
-        this.inference.predict(feats),
-      ]);
-
-      if (!ruleResult.shouldIntervene) {
-        return;
-      }
-
-      // ── 6. Merge decision ──────────────────────────────────────────────────
-      // ONNX if confidence > 0.6 → use ONNX confidence (records richer signal);
-      // otherwise fall back to rules confidence.
-      // The type and channel are always determined by the rule engine.
-      const finalConfidence =
-        inferenceResult && inferenceResult.confidence > 0.6
-          ? inferenceResult.confidence
-          : ruleResult.confidence;
-
-      const channel: InterventionChannel = ruleResult.channel;
-
-      // ── 7. Experiment assignment ───────────────────────────────────────────
+      // 11. Experiment assignment
       const variant = await this.experiment.getVariant(storeId, customerId);
 
-      // ── 8. Discount code ───────────────────────────────────────────────────
+      // 12. Discount code (only for monetary in-shop offers)
       const intId = deterministicInterventionId(event.eid, distinctId);
       let discountCode: string | null = null;
-      if (NEEDS_DISCOUNT_CODE.has(ruleResult.type) && channel === 'in_shop') {
+      if (NEEDS_DISCOUNT_CODE.has(riskScore.type) && channel === 'in_shop') {
         discountCode = await this.discount.generateCode(
           storeId,
           sessionId,
-          ruleResult.value,
+          riskScore.value,
           intId,
         );
       }
 
-      // ── 9. Write record (delivered=false) BEFORE outbound ─────────────────
+      // 13. Write record (delivered=false) BEFORE outbound attempt
       await this.writer.write({
         interventionId: intId,
         sessionId,
         storeId,
         customerId,
         distinctId,
-        type: ruleResult.type,
+        type: riskScore.type,
         channel,
-        value: ruleResult.value,
+        value: riskScore.value,
         discountCode: discountCode ?? undefined,
         variant,
+        triggerReason: event.t,
         decisionLatencyMs: Date.now() - t0,
-        confidenceScore: finalConfidence,
+        confidenceScore: riskScore.score,
       });
 
-      // ── 10. Outbound delivery ──────────────────────────────────────────────
+      // 14. Outbound delivery
       if (channel === 'in_shop') {
         const payload: InShopPayload = {
           interventionId: intId,
-          type: ruleResult.type as InShopInterventionType,
-          value: ruleResult.value,
+          type: riskScore.type as InShopInterventionType,
+          value: riskScore.value,
           discountCode: discountCode ?? undefined,
         };
         await this.outbound.route('in_shop', sessionId, payload);
@@ -178,8 +212,8 @@ export class DecisionOrchestrator {
           sessionId,
           storeId,
           distinctId,
-          type: ruleResult.type as OffShopInterventionType,
-          templateId: `${ruleResult.type}_default`,
+          type: riskScore.type as OffShopInterventionType,
+          templateId: `${riskScore.type}_default`,
           email: event.email,
           emailConsent: event.email_consent,
           smsConsent: event.sms_consent,
@@ -191,24 +225,28 @@ export class DecisionOrchestrator {
         await this.outbound.route('off_shop', sessionId, payload);
       }
 
-      // ── 11. Mark delivered ─────────────────────────────────────────────────
+      // 15. Mark delivered
       await this.writer.markDelivered(intId, channel);
 
-      // ── 12. Set cooldown AFTER delivery confirmed ──────────────────────────
+      // 16. Set cooldown AFTER delivery confirmed
       await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
 
-      // ── 13. Metrics ────────────────────────────────────────────────────────
-      this.metrics.interventionTotal(ruleResult.type, channel, variant);
+      // 17. Persist sent-marker — prevents re-send for 5 min even after lock TTL expires
+      await this.lock.markSent(sessionId);
+
+      // 18. Metrics
+      this.metrics.interventionTotal(riskScore.type, channel, variant);
       this.metrics.decisionLatency(Date.now() - t0);
 
       this.logger.info(
         {
           interventionId: intId,
-          type: ruleResult.type,
+          type: riskScore.type,
           channel,
           variant,
           storeId,
           sessionId,
+          score: riskScore.score,
           latencyMs: Date.now() - t0,
         },
         'Intervention dispatched',
@@ -218,3 +256,4 @@ export class DecisionOrchestrator {
     }
   }
 }
+

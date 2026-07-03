@@ -64,6 +64,20 @@ export class Enricher {
       server_timestamp: new Date(nowMs).toISOString(),
     };
 
+    // Persist identity context so the decision-engine's stale scanner and scheduler
+    // worker can reconstruct a full event from Redis without a Kafka message.
+    // Fire-and-forget — failure must not block enrichment.
+    void this.session.setContext(raw.session_id, {
+      storeId: raw.store_id,
+      customerId: customerData?.id ?? null,
+      distinctId: raw.distinct_id,
+      email: customerData?.email ?? undefined,
+      emailConsent: customerData?.emailConsent ?? false,
+      smsConsent: customerData?.smsConsent ?? false,
+    }).catch((err: unknown) => {
+      this.logger.warn({ err, session_id: raw.session_id }, 'setContext failed (non-fatal)');
+    });
+
     return { kind: 'enriched', event: enriched };
   }
 }

@@ -166,7 +166,6 @@ services:
         condition: service_started
     volumes:
       - ./packages/db/src/schema/clickhouse:/sql:ro
-      - ./packages/db/src/schema/clickhouse-features-view.sql:/sql/mv_customer_features.sql:ro
     entrypoint: ["/bin/sh", "-c"]
     command: |
       sleep 5

@@ -14,11 +14,18 @@ import { BudgetService } from './budget/budget.service.js';
 import { FeatureService } from './features/features.service.js';
 import { RuleEngine } from './rules/rules.service.js';
 import { InferenceService } from './inference/inference.service.js';
+import { RiskScorerService } from './risk/risk-scorer.service.js';
+import { LockService } from './lock/lock.service.js';
+import { SchedulerService } from './scheduler/scheduler.service.js';
+import { SchedulerWorker } from './scheduler/scheduler.worker.js';
+import { SessionFeaturesService } from './session-features/session-features.service.js';
+import { StaleScannerService } from './stale-scanner/stale-scanner.service.js';
 import { ExperimentService } from './experiment/experiment.service.js';
 import { DiscountService } from './discount/discount.service.js';
 import { OutboundService } from './outbound/outbound.service.js';
 import { InterventionWriter } from './intervention/intervention.writer.js';
 import { DecisionOrchestrator } from './intervention/intervention.service.js';
+import { TriggerHandler } from './trigger/trigger.handler.js';
 import { DecisionConsumer } from './kafka/decision.consumer.js';
 
 const logger = createLogger({ service: 'decision-engine' });
@@ -50,7 +57,6 @@ async function main(): Promise<void> {
   logger.info({ port: config.port }, 'Starting decision-engine');
 
   const metrics = new DecisionMetrics();
-  const healthServer = new HealthServer(metrics, config.port);
 
   // ── Infrastructure ───────────────────────────────────────────────────────
   const db = createDb({ connectionString: config.postgresUrl });
@@ -58,7 +64,7 @@ async function main(): Promise<void> {
   const cache = CacheService.createMultiLevel(redisClient);
   const clickhouse = new ClickHouseClient(buildClickHouseConfig(config.clickhouseUrl));
 
-  // ── Phase B services ─────────────────────────────────────────────────────
+  // ── Leaf services (no inter-service deps) ────────────────────────────────
   const policy = new PolicyService(db, cache);
   const cooldown = new CooldownService(redisClient);
   const budget = new BudgetService(db, redisClient);
@@ -68,7 +74,13 @@ async function main(): Promise<void> {
   const experiment = new ExperimentService(db, cache);
   const discount = new DiscountService(db);
 
-  // ── Phase C services ─────────────────────────────────────────────────────
+  // ── Phase 1: Risk scoring + concurrency guards ───────────────────────────
+  const riskScorer = new RiskScorerService(rules, inference, redisClient);
+  const lock = new LockService(redisClient);
+  const scheduler = new SchedulerService(redisClient);
+  const sessionFeatures = new SessionFeaturesService(redisClient);
+
+  // ── Phase 2: Delivery ────────────────────────────────────────────────────
   const outbound = new OutboundService(config, metrics);
 
   const producer = createProducerClient({
@@ -84,30 +96,45 @@ async function main(): Promise<void> {
     metrics,
   );
 
+  // ── Orchestrator + fast-path ─────────────────────────────────────────────
   const orchestrator = new DecisionOrchestrator(
     policy,
     cooldown,
     budget,
     features,
-    rules,
-    inference,
+    riskScorer,
     experiment,
     discount,
     outbound,
     writer,
     metrics,
+    lock,
+    scheduler,
   );
 
+  const triggerHandler = new TriggerHandler(orchestrator, config.internalSecret, sessionFeatures);
+  const healthServer = new HealthServer(metrics, config.port, triggerHandler);
+
+  // ── Background workers ───────────────────────────────────────────────────
+  const schedulerWorker = new SchedulerWorker(scheduler, sessionFeatures, orchestrator);
+  const staleScanner = new StaleScannerService(redisClient, sessionFeatures, orchestrator, lock);
+
+  // ── Kafka consumer (Kafka-path trigger events) ───────────────────────────
   const consumer = new DecisionConsumer(config, orchestrator, metrics);
 
   healthServer.start();
   logger.info({ port: config.port }, 'Health server listening');
+
+  schedulerWorker.start();
+  staleScanner.start();
 
   await consumer.start();
   logger.info({ group: config.kafkaGroupId, topic: config.kafkaTopicEnriched }, 'Decision consumer started');
 
   const shutdown = async (): Promise<void> => {
     logger.info('Shutting down decision-engine');
+    schedulerWorker.stop();
+    staleScanner.stop();
     await consumer.shutdown();
     await producer.shutdown();
     healthServer.stop();

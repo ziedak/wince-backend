@@ -7,6 +7,7 @@ import { IdempotencyService } from './idempotency.js';
 import { SessionService } from './session.js';
 import { CustomerService } from './customer.js';
 import { Enricher } from './enricher.js';
+import { TriggerForwarder } from './trigger-forwarder.js';
 import { EnrichmentConsumer } from './consumer.js';
 import { HealthServer } from './health.js';
 
@@ -33,7 +34,8 @@ async function main(): Promise<void> {
   const session = new SessionService(redis, config.sessionTtlSeconds);
   const customer = new CustomerService(redis, db, metrics);
   const enricher = new Enricher(idempotency, session, customer, metrics, logger);
-  const consumer = new EnrichmentConsumer(config, enricher, idempotency, metrics);
+  const triggerForwarder = new TriggerForwarder(config.decisionEngineUrl, config.internalSecret);
+  const consumer = new EnrichmentConsumer(config, enricher, idempotency, metrics, triggerForwarder);
   const healthServer = new HealthServer(consumer.state, redis, db, metrics, config.port);
 
   healthServer.start();

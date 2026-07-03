@@ -32,6 +32,14 @@ export interface KafkaConsumerOptions {
   groupId: string;
   connectionTimeout?: number;
   requestTimeout?: number;
+  /** KafkaJS session timeout in ms (default 30000) */
+  sessionTimeout?: number;
+  /** KafkaJS heartbeat interval in ms (default 3000) */
+  heartbeatInterval?: number;
+  /** Maximum number of in-flight requests per connection (default 1) */
+  maxInFlightRequests?: number;
+  /** Use cooperative (incremental) rebalancing strategy instead of eager */
+  useCooperativeRebalancing?: boolean;
 }
 
 export interface ConsumerClient {
@@ -131,6 +139,10 @@ export function createConsumerClient(options: KafkaConsumerOptions): ConsumerCli
 
   const consumer: Consumer = kafka.consumer({
     groupId: options.groupId,
+    sessionTimeout: options.sessionTimeout,
+    heartbeatInterval: options.heartbeatInterval,
+    maxInFlightRequests: options.maxInFlightRequests,
+    rebalanceTimeout: options.sessionTimeout,
   });
 
   let connected = false;
