@@ -2,9 +2,18 @@ import { createLogger } from '@org/logger';
 import { circuitBreaker, ConsecutiveBreaker, handleAll, BrokenCircuitError } from 'cockatiel';
 import type { CustomerFeatures } from '../features/features.service.js';
 import type { DecisionMetrics } from '../metrics.js';
+import type { InterventionType, InterventionChannel } from '@org/types';
 
 export interface InferenceResult {
   confidence: number;
+  /**
+   * Model-driven routing fields. Available once the ONNX model emits these outputs
+   * per v2 spec Open Item #12. When absent, the rules engine determines
+   * type, channel, and value as fallback.
+   */
+  type?: InterventionType;
+  channel?: InterventionChannel;
+  value?: number;
 }
 
 export class InferenceService {

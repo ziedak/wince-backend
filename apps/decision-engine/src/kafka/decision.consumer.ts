@@ -6,9 +6,13 @@ import type { EnrichedEvent } from '@org/types';
 import type { Config } from '../config.js';
 import type { DecisionOrchestrator } from '../intervention/intervention.service.js';
 import type { DecisionMetrics } from '../metrics.js';
+import type { LockService } from '../lock/lock.service.js';
+import type { SchedulerService } from '../scheduler/scheduler.service.js';
 
 /** Event types that may trigger an intervention. All other types are ignored. */
 const TRIGGER_EVENTS = new Set(['checkout_abandon', 'exit_intent', 'idle_timeout']);
+/** Purchase events clear post-conversion state to prevent follow-up interventions. */
+const PURCHASE_EVENT = 'purchase';
 
 const RETRY_DELAYS = [100, 200, 400];
 
@@ -62,6 +66,8 @@ export class DecisionConsumer {
     private readonly config: Config,
     private readonly orchestrator: DecisionOrchestrator,
     private readonly metrics: DecisionMetrics,
+    private readonly lock: LockService,
+    private readonly scheduler: SchedulerService,
   ) {
     this.logger = createLogger({ service: 'DecisionConsumer' });
   }
@@ -136,6 +142,28 @@ export class DecisionConsumer {
             } catch {
               this.logger.warn({ key }, 'Invalid JSON in message — sending to DLQ');
               await sendToDlq(rawStr, 'invalid_json', key);
+              resolveOffset(message.offset);
+              await heartbeat();
+              continue;
+            }
+
+            // Guard (v2 spec §1): events missing a resolved user identity go to DLQ.
+            // The Decision Engine's contract requires both customer_id and cart_value;
+            // events missing customer_id cannot be locked, scored, or budget-gated correctly.
+            if (event.customer_id === null || event.customer_id === undefined) {
+              this.logger.warn({ key, eid: event.eid }, 'Missing customer_id — routing to DLQ');
+              await sendToDlq(rawStr, 'missing_user_id', key);
+              resolveOffset(message.offset);
+              await heartbeat();
+              continue;
+            }
+
+            // Purchase cleanup (v2 spec §4.4): clear all post-conversion state so a repeat
+            // buyer's next session starts fresh without triggering cooldown blocks.
+            if (event.t === PURCHASE_EVENT) {
+              await this.lock.clearUserSent(event.customer_id);
+              await this.scheduler.clearUserSessions(event.customer_id, event.store_id);
+              this.logger.debug({ customerId: event.customer_id, storeId: event.store_id }, 'Purchase: cleared user state');
               resolveOffset(message.offset);
               await heartbeat();
               continue;

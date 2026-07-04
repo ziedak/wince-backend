@@ -1,20 +1,53 @@
 import { createLogger } from '@org/logger';
 import type { RedisClient } from '@org/redis_client';
+import { randomUUID } from 'node:crypto';
 import type { DecisionMetrics } from '../metrics.js';
 
-const SESSION_LOCK_TTL = 30;   // seconds — covers full intervention pipeline execution
-const CART_LOCK_TTL = 300;     // 5 minutes — multi-tab protection per cart
-const SENT_TTL = 300;          // 5 minutes — prevents re-send after session lock expires
+const USER_LOCK_TTL = 30;  // seconds — covers full Phase 2 pipeline execution
+const SENT_TTL = 600;      // 10 minutes — user-scoped sent marker (v2 spec §4.2)
+
+// Atomic acquire: SET NX EX; returns token on success, '' on contention
+const ACQUIRE_SCRIPT = `
+if redis.call('set', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2]) then
+  return ARGV[1]
+else
+  return ''
+end
+`.trim();
+
+// Atomic renew: extend TTL only if the caller still holds the lock (fencing check)
+const RENEW_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  redis.call('expire', KEYS[1], ARGV[2])
+  return 1
+else
+  return 0
+end
+`.trim();
+
+// Atomic release: delete only if the caller still holds the lock
+const RELEASE_SCRIPT = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+else
+  return 0
+end
+`.trim();
 
 /**
- * Manages Redis-backed concurrency guards for the intervention pipeline.
+ * User-scoped intervention lock with fencing tokens.
  *
- * Three layers of protection:
- *   1. Session lock  — prevents two concurrent decisions for the same session
- *   2. Cart lock     — prevents duplicate interventions across browser tabs sharing a cart
- *   3. Sent marker   — persists the "already intervened" state beyond the session lock TTL
+ * All five decision entry points (Kafka consumer, HTTP trigger, scheduler,
+ * stale scanner, admin manual intervention) acquire lock:user:{userId} before
+ * entering Phase 2. This prevents two concurrent events from different sessions
+ * of the same user from producing duplicate interventions.
  *
- * All operations fail-open on Redis error to avoid blocking interventions during outages.
+ * Phase 1 (risk scoring) runs WITHOUT this lock — its Redis writes are
+ * last-write-wins idempotent. Concurrent re-scoring is wasteful but correct.
+ *
+ * Fencing token: a random UUID stored as the lock value. Callers verify the
+ * token on each renewal. A stale holder that resumes after a GC pause past
+ * its TTL will observe renewUserLock() = false and must abort Phase 2.
  */
 export class LockService {
   private readonly logger = createLogger({ service: 'LockService' });
@@ -25,78 +58,93 @@ export class LockService {
   ) {}
 
   /**
-   * Acquires a per-session intervention lock (SET NX EX).
-   * Returns true when the lock is acquired (safe to proceed).
-   * Returns false when another decision is already in flight for this session.
+   * Attempts to acquire the user-level intervention lock.
+   *
+   * Returns a fencing token (UUID) on success. Returns null when the lock is
+   * already held. Fails open (returns a token) on Redis errors to avoid
+   * blocking interventions during Redis degradation.
    */
-  async acquireSessionLock(sessionId: string): Promise<boolean> {
+  async acquireUserLock(userId: number): Promise<string | null> {
+    const key = `lock:user:${userId}`;
+    const token = randomUUID();
     try {
-      const result = await this.redis.getRedis().set(
-        `lock:intervention:${sessionId}`,
-        '1',
-        'EX',
-        SESSION_LOCK_TTL,
-        'NX',
-      );
-      return result === 'OK';
+      const result = (await this.redis.getRedis().eval(
+        ACQUIRE_SCRIPT, 1, key, token, String(USER_LOCK_TTL),
+      )) as string;
+      return result === token ? token : null;
     } catch (err) {
-      this.logger.warn({ err, sessionId }, 'LockService: session lock check failed, allowing through');
-      this.metrics.lockAcquireFailed('session');
-      return true; // fail-open
+      this.logger.warn({ err, userId }, 'LockService: acquireUserLock error, failing open');
+      this.metrics.lockAcquireFailed('user');
+      return token; // fail-open
     }
   }
 
   /**
-   * Acquires a per-cart lock (SET NX EX).
-   * Returns true when the lock is acquired.
-   * Returns false when another intervention is already in flight for this cart (multi-tab scenario).
+   * Renews the lock TTL only if the caller still owns it (fencing check).
+   * Returns false when the lock was lost — callers must abort Phase 2 immediately.
    */
-  async acquireCartLock(cartId: string): Promise<boolean> {
+  async renewUserLock(userId: number, token: string): Promise<boolean> {
+    const key = `lock:user:${userId}`;
     try {
-      const result = await this.redis.getRedis().set(
-        `lock:cart:${cartId}`,
-        '1',
-        'EX',
-        CART_LOCK_TTL,
-        'NX',
+      const result = await this.redis.getRedis().eval(
+        RENEW_SCRIPT, 1, key, token, String(USER_LOCK_TTL),
       );
-      return result === 'OK';
+      return result === 1;
     } catch (err) {
-      this.logger.warn({ err, cartId }, 'LockService: cart lock check failed, allowing through');
-      this.metrics.lockAcquireFailed('cart');
-      return true; // fail-open
+      this.logger.warn({ err, userId }, 'LockService: renewUserLock failed, assuming still valid');
+      return true; // assume valid on transient Redis error
     }
   }
 
-  /** Records that an intervention was successfully sent for this session (TTL 5 min). */
-  async markSent(sessionId: string): Promise<void> {
+  /**
+   * Releases the lock. No-op if the lock was already released or taken by another holder.
+   * Must be called in finally blocks after Phase 2 completes or fails terminally.
+   */
+  async releaseUserLock(userId: number, token: string): Promise<void> {
+    const key = `lock:user:${userId}`;
     try {
-      await this.redis.getRedis().setex(`intervention:sent:${sessionId}`, SENT_TTL, '1');
+      await this.redis.getRedis().eval(RELEASE_SCRIPT, 1, key, token);
     } catch (err) {
-      this.logger.warn({ err, sessionId }, 'LockService: markSent failed (non-fatal)');
+      this.logger.warn({ err, userId }, 'LockService: releaseUserLock failed — will expire via TTL');
     }
   }
 
-  /** Returns true if an intervention was sent for this session within the last 5 minutes. */
-  async isSent(sessionId: string): Promise<boolean> {
+  /**
+   * Returns true if an intervention was already sent to this user within the last
+   * 10 minutes. Checked before lock acquisition as a cheap fast-path guard.
+   */
+  async isSent(userId: number): Promise<boolean> {
     try {
-      const val = await this.redis.getRedis().get(`intervention:sent:${sessionId}`);
+      const val = await this.redis.getRedis().get(`sent:user:${userId}`);
       return val !== null;
     } catch (err) {
-      this.logger.warn({ err, sessionId }, 'LockService: isSent check failed, assuming not sent');
-      return false; // fail-open: allow the intervention attempt
+      this.logger.warn({ err, userId }, 'LockService: isSent check failed, assuming not sent (fail-open)');
+      return false;
     }
   }
 
   /**
-   * Renews the session lock TTL. Called by the heartbeat interval in the orchestrator
-   * to prevent lock expiry during slow pipeline execution (e.g. degraded Postgres/outbound).
+   * Records that an intervention was successfully delivered to this user.
+   * TTL = 10 minutes. Prevents duplicates from any entry point during an
+   * active intervention episode.
    */
-  async renewSessionLock(sessionId: string): Promise<void> {
+  async markSent(userId: number): Promise<void> {
     try {
-      await this.redis.getRedis().expire(`lock:intervention:${sessionId}`, SESSION_LOCK_TTL);
+      await this.redis.getRedis().setex(`sent:user:${userId}`, SENT_TTL, '1');
     } catch (err) {
-      this.logger.warn({ err, sessionId }, 'LockService: renewSessionLock failed (non-fatal)');
+      this.logger.warn({ err, userId }, 'LockService: markSent failed (non-fatal)');
+    }
+  }
+
+  /**
+   * Clears the sent marker for a user. Called on purchase events so the next
+   * shopping session (repeat buyer) can trigger fresh interventions.
+   */
+  async clearUserSent(userId: number): Promise<void> {
+    try {
+      await this.redis.getRedis().del(`sent:user:${userId}`);
+    } catch (err) {
+      this.logger.warn({ err, userId }, 'LockService: clearUserSent failed (non-fatal)');
     }
   }
 }

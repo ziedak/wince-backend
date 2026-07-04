@@ -96,6 +96,7 @@ export class DecisionOrchestrator {
 
     // Declared outside try so it is accessible in the catch block for cleanup.
     let lockHeartbeat: NodeJS.Timeout | undefined;
+    let lockToken: string | null = null;
 
     try {
       // ── Phase 1: Risk Scoring ──────────────────────────────────────────────
@@ -115,16 +116,13 @@ export class DecisionOrchestrator {
       const feats = await this.features.getFeatures(storeId, distinctId);
 
       // 4. Risk scoring — rules engine + ONNX inference in parallel
-      const riskScore = await this.riskScorer.score(event, feats, pol);
+      const riskScore = await this.riskScorer.score(event, feats, pol, customerId);
       if (!riskScore) {
         // Rules gate: cart too low, no valid delivery channel, etc.
         return;
       }
 
-      // 5. Persist score for observability (fire-and-forget; non-blocking)
-      void this.riskScorer.writeScore(sessionId, riskScore.score);
-
-      // 6. Threshold gate
+      // 5. Threshold gate — schedule re-evaluation if below threshold
       if (!riskScore.shouldIntervene) {
         await this.scheduler.schedule(sessionId, riskScore.score);
         this.logger.debug(
@@ -136,43 +134,39 @@ export class DecisionOrchestrator {
 
       // ── Phase 2: Intervention Pipeline ────────────────────────────────────
 
-      // 7. isSent guard — cheap check before acquiring the session lock
-      if (await this.lock.isSent(sessionId)) {
-        this.logger.debug({ sessionId }, 'Intervention already sent in this window — skipping');
+      // 6. isSent guard — user-scoped, cheap check before acquiring the lock
+      if (await this.lock.isSent(customerId)) {
+        this.logger.debug({ sessionId, customerId }, 'Intervention already sent in this window — skipping');
         return;
       }
 
-      // 8. Session-level lock — prevents concurrent decisions for the same session
-      const sessionLocked = await this.lock.acquireSessionLock(sessionId);
-      if (!sessionLocked) {
-        this.logger.debug({ sessionId }, 'Session lock contention — another decision in flight');
+      // 7. User-level lock — prevents concurrent Phase 2 execution across all entry
+      // points (Kafka, trigger, scheduler, stale scanner, admin manual) for the same user.
+      // Returns a fencing token to guard against stale holders.
+      lockToken = await this.lock.acquireUserLock(customerId);
+      if (!lockToken) {
+        this.logger.debug({ sessionId, customerId }, 'User lock contention — another decision in flight');
         return;
       }
 
-      // Renew the lock every 5 s to prevent TTL expiry during slow pipeline execution
-      // (outbound calls and DB writes can take 50–200 ms; 30 s TTL is sufficient under normal
-      // load but the heartbeat provides a safety net under degraded conditions).
+      // Renew the lock every 5 s to prevent TTL expiry. The fencing token check
+      // in renewUserLock() detects if the lock was taken by a new holder.
       lockHeartbeat = setInterval(() => {
-        void this.lock.renewSessionLock(sessionId).catch(() => {});
+        if (!lockToken) return;
+        void this.lock.renewUserLock(customerId, lockToken).then((stillValid) => {
+          if (!stillValid) {
+            this.logger.warn({ customerId, sessionId }, 'DecisionOrchestrator: lock lost during pipeline — fencing detected');
+          }
+        }).catch(() => {});
       }, 5_000);
 
-      // 9. Cart-level lock — prevents duplicate interventions across browser tabs
-      const cartId = (event.props as Record<string, unknown> | undefined)?.['cart_id'] as string | undefined;
-      if (cartId !== undefined) {
-        const cartLocked = await this.lock.acquireCartLock(cartId);
-        if (!cartLocked) {
-          clearInterval(lockHeartbeat);
-          this.logger.debug({ sessionId, cartId }, 'Cart lock contention — intervention in flight for cart');
-          return;
-        }
-      }
-
-      // 10. Budget gate — reserved only once we know an intervention will be sent
+      // 8. Budget gate — reserved only once we know an intervention will be sent
       const discountValue = pol?.discountValue ?? 10;
       const maxBudget = pol?.maxDailyBudgetAmount ?? 100;
       const budgetOk = await this.budget.checkAndReserve(storeId, discountValue, maxBudget);
       if (!budgetOk) {
         clearInterval(lockHeartbeat);
+        await this.lock.releaseUserLock(customerId, lockToken);
         this.metrics.budgetExhausted();
         this.logger.info({ storeId }, 'Budget exhausted — skipping');
         return;
@@ -211,6 +205,7 @@ export class DecisionOrchestrator {
         triggerReason: event.t,
         decisionLatencyMs: Date.now() - t0,
         confidenceScore: riskScore.score,
+        ...(riskScore.isFallback ? { source: 'fallback' } : {}),
       }).catch((err: unknown) => {
         this.logger.error({ err, interventionId: intId }, 'DecisionOrchestrator: writer.write fire-and-forget error');
       });
@@ -249,10 +244,14 @@ export class DecisionOrchestrator {
       // 16. Set cooldown AFTER delivery confirmed
       await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
 
-      // 17. Persist sent-marker — prevents re-send for 5 min even after lock TTL expires
-      await this.lock.markSent(sessionId);
+      // 17. Persist sent-marker (user-scoped, 10 min) — prevents re-send from any entry point
+      await this.lock.markSent(customerId);
 
-      // 18. Metrics
+      // 18. Release the user lock
+      clearInterval(lockHeartbeat);
+      await this.lock.releaseUserLock(customerId, lockToken);
+
+      // 19. Metrics
       this.metrics.interventionTotal(riskScore.type, channel, variant);
       this.metrics.decisionLatency(Date.now() - t0);
 
@@ -264,15 +263,18 @@ export class DecisionOrchestrator {
           variant,
           storeId,
           sessionId,
+          customerId,
           score: riskScore.score,
+          onnxDriven: !riskScore.isFallback,
           latencyMs: Date.now() - t0,
         },
         'Intervention dispatched',
       );
-      clearInterval(lockHeartbeat);
     } catch (err) {
       clearInterval(lockHeartbeat);
-      this.logger.error({ err, storeId, sessionId }, 'DecisionOrchestrator: unexpected error (non-fatal)');
+      // Release lock on unexpected error — don't leave it held until TTL
+      try { await this.lock.releaseUserLock(customerId, lockToken ?? ''); } catch { /* ignore */ }
+      this.logger.error({ err, storeId, sessionId, customerId }, 'DecisionOrchestrator: unexpected error (non-fatal)');
     }
   }
 
@@ -304,17 +306,22 @@ export class DecisionOrchestrator {
         if (onCooldown) {
           return { interventionId: null, status: 'skipped', reason: 'cooldown_active' };
         }
-        if (await this.lock.isSent(sessionId)) {
+        if (await this.lock.isSent(customerId)) {
           return { interventionId: null, status: 'skipped', reason: 'already_sent' };
         }
       }
 
-      // Acquire session lock
-      const sessionLocked = await this.lock.acquireSessionLock(sessionId);
-      if (!sessionLocked) {
+      // Acquire user-level lock (same path as all automated entry points per v2 spec §4.2)
+      const manualToken = await this.lock.acquireUserLock(customerId);
+      if (!manualToken) {
         return { interventionId: null, status: 'skipped', reason: 'lock_contention' };
       }
 
+      let manualHeartbeat: NodeJS.Timeout | undefined;
+      try {
+      manualHeartbeat = setInterval(() => {
+        void this.lock.renewUserLock(customerId, manualToken).catch(() => {});
+      }, 5_000);
       // Policy (for budget limit)
       const pol = await this.policy.getPolicy(storeId);
 
@@ -383,14 +390,21 @@ export class DecisionOrchestrator {
 
       await this.writer.markDelivered(intId, channel);
       await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
-      await this.lock.markSent(sessionId);
+      await this.lock.markSent(customerId);
+      clearInterval(manualHeartbeat);
+      await this.lock.releaseUserLock(customerId, manualToken);
       this.metrics.interventionTotal(type, channel, variant);
 
       this.logger.info(
-        { interventionId: intId, type, channel, storeId, sessionId, latencyMs: Date.now() - t0 },
+        { interventionId: intId, type, channel, storeId, sessionId, customerId, latencyMs: Date.now() - t0 },
         'Manual intervention dispatched',
       );
       return { interventionId: intId, status: 'sent' };
+      } catch (innerErr) {
+        clearInterval(manualHeartbeat);
+        await this.lock.releaseUserLock(customerId, manualToken);
+        throw innerErr;
+      }
     } catch (err) {
       this.logger.error({ err, storeId, sessionId }, 'manualDecide: unexpected error');
       return { interventionId: null, status: 'error', reason: String(err) };

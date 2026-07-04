@@ -42,12 +42,45 @@ export class SchedulerService {
       const members = await raw.zrangebyscore(EVAL_QUEUE_KEY, 0, now, 'LIMIT', 0, 100);
       if (members.length === 0) return [];
       // Remove the same range we just fetched. A brief race window is acceptable
-      // because the session-level lock in DecisionOrchestrator prevents double interventions.
+      // because the user-level lock in DecisionOrchestrator prevents double interventions.
       await raw.zremrangebyscore(EVAL_QUEUE_KEY, 0, now);
       return members;
     } catch (err) {
       this.logger.warn({ err }, 'SchedulerService: popDue failed');
       return [];
+    }
+  }
+
+  /**
+   * Clears all pending re-evaluation entries and risk state for a user.
+   * Called on purchase events to prevent post-conversion interventions.
+   *
+   * Removes: all user sessions from eval:queue, risk:user:{userId},
+   * active_risk:{storeId} entry, user_sessions:{userId} index.
+   */
+  async clearUserSessions(userId: number, storeId: number): Promise<void> {
+    const raw = this.redis.getRedis();
+    try {
+      // Fetch all session IDs registered for this user
+      const sessionIds = await raw.zrange(`user_sessions:${userId}`, 0, -1);
+
+      const pipeline = raw.pipeline();
+
+      // Remove each session from the eval queue
+      for (const sid of sessionIds) {
+        pipeline.zrem(EVAL_QUEUE_KEY, sid);
+      }
+
+      // Clear user-level risk state
+      pipeline.del(`risk:user:${userId}`);
+      pipeline.zrem(`active_risk:${storeId}`, String(userId));
+      pipeline.del(`user_sessions:${userId}`);
+
+      await pipeline.exec();
+
+      this.logger.info({ userId, storeId, sessionCount: sessionIds.length }, 'SchedulerService: cleared user sessions on purchase');
+    } catch (err) {
+      this.logger.warn({ err, userId, storeId }, 'SchedulerService: clearUserSessions failed (non-fatal)');
     }
   }
 }

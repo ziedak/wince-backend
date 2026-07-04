@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   const internalHandler = new InternalHandler(orchestrator, sessionFeatures, config.internalSecret);
 
   // Create consumer before HealthServer so its state ref can be passed for /ready checks.
-  const consumer = new DecisionConsumer(config, orchestrator, metrics);
+  const consumer = new DecisionConsumer(config, orchestrator, metrics, lock, scheduler);
 
   const healthServer = new HealthServer(
     metrics,
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
 
   // ── Background workers ───────────────────────────────────────────────────
   const schedulerWorker = new SchedulerWorker(scheduler, sessionFeatures, orchestrator);
-  const staleScanner = new StaleScannerService(redisClient, sessionFeatures, orchestrator, lock);
+  const staleScanner = new StaleScannerService(redisClient, sessionFeatures, orchestrator, lock, features);
 
   healthServer.start();
   logger.info({ port: config.port }, 'Health server listening');

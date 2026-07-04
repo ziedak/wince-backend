@@ -3,6 +3,7 @@ import type { RedisClient } from '@org/redis_client';
 import type { LockService } from '../lock/lock.service.js';
 import type { SessionFeaturesService } from '../session-features/session-features.service.js';
 import type { DecisionOrchestrator } from '../intervention/intervention.service.js';
+import type { FeatureService } from '../features/features.service.js';
 
 const ACTIVE_SESSIONS_KEY = 'active:sessions';
 const STALE_THRESHOLD_MS = 2 * 60 * 1_000;  // 2 minutes — sessions silent longer than this are stale
@@ -28,6 +29,7 @@ export class StaleScannerService {
     private readonly sessionFeatures: SessionFeaturesService,
     private readonly orchestrator: DecisionOrchestrator,
     private readonly lock: LockService,
+    private readonly features: FeatureService,
   ) {}
 
   start(): void {
@@ -71,8 +73,19 @@ export class StaleScannerService {
       );
       this.logger.info({ count: staleSids.length }, 'StaleScannerService: processing stale sessions');
 
-      for (const sid of staleSids) {
-        await this.processStaleSession(sid);
+      // Batch pre-fetch all session contexts first (to build feature prefetch list)
+      const contexts = await Promise.all(
+        staleSids.map((sid) => this.sessionFeatures.getSessionContext(sid)),
+      );
+
+      // Batch pre-fetch ClickHouse features in a single query per store
+      const featureEntries = contexts
+        .filter((ctx) => ctx !== null)
+        .map((ctx) => ({ storeId: ctx!.storeId, distinctId: ctx!.distinctId }));
+      await this.features.prefetchBatch(featureEntries);
+
+      for (let i = 0; i < staleSids.length; i++) {
+        await this.processStaleSession(staleSids[i]!, contexts[i]);
       }
     } catch (err) {
       this.logger.error({ err }, 'StaleScannerService: scan error');
@@ -85,13 +98,15 @@ export class StaleScannerService {
     }
   }
 
-  private async processStaleSession(sessionId: string): Promise<void> {
+  private async processStaleSession(
+    sessionId: string,
+    ctx: import('../session-features/session-features.service.js').SessionContext | null | undefined,
+  ): Promise<void> {
     try {
-      // Skip sessions that already received an intervention
-      if (await this.lock.isSent(sessionId)) return;
-
-      const ctx = await this.sessionFeatures.getSessionContext(sessionId);
       if (!ctx) return; // Session hash expired from Redis
+
+      // Skip sessions whose user already received an intervention
+      if (ctx.customerId !== null && await this.lock.isSent(ctx.customerId)) return;
 
       // Force session_available = false: stale session likely means closed tab
       const event = this.sessionFeatures.toEnrichedEvent(ctx);

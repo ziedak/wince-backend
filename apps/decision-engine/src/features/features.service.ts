@@ -71,4 +71,72 @@ export class FeatureService {
       return { ...ZERO_FEATURES };
     }
   }
+
+  /**
+   * Pre-fetches features for multiple entries in a single ClickHouse query and
+   * populates the cache. Subsequent individual `getFeatures()` calls for these
+   * entries will be cache hits — no extra I/O.
+   *
+   * Used by the stale scanner to batch-fetch features for all stale sessions
+   * before processing them individually, avoiding N sequential ClickHouse queries.
+   */
+  async prefetchBatch(entries: Array<{ storeId: number; distinctId: string }>): Promise<void> {
+    if (entries.length === 0) return;
+
+    const cacheKeys = entries.map((e) => `feature:${e.storeId}:${e.distinctId}`);
+
+    // Identify which entries are already cached
+    let cachedValues: Array<CustomerFeatures | null>;
+    try {
+      cachedValues = await this.cache.mGet<CustomerFeatures>(cacheKeys);
+    } catch {
+      cachedValues = cacheKeys.map(() => null);
+    }
+
+    const missing = entries.filter((_, i) => cachedValues[i] === null);
+    if (missing.length === 0) return;
+
+    // Group missing entries by storeId for efficient IN-clause queries
+    const byStore = new Map<number, Array<{ distinctId: string; cacheKey: string }>>();
+    for (const e of missing) {
+      const cacheKey = `feature:${e.storeId}:${e.distinctId}`;
+      const group = byStore.get(e.storeId) ?? [];
+      group.push({ distinctId: e.distinctId, cacheKey });
+      byStore.set(e.storeId, group);
+    }
+
+    for (const [storeId, group] of byStore) {
+      const distinctIds = group.map((g) => g.distinctId);
+      try {
+        const start = Date.now();
+        const rows = await this.clickhouse.execute<Array<ClickHouseRow & { distinct_id: string }>>(
+          `SELECT distinct_id, abandonment_rate_7d, avg_cart_value_30d
+           FROM mv_customer_features
+           WHERE store_id = {storeId:UInt32} AND distinct_id IN ({distinctIds:Array(String)})`,
+          { storeId, distinctIds },
+        );
+        this.metrics.dbOperation('clickhouse', 'feature_batch_fetch', Date.now() - start);
+
+        const rowMap = new Map(
+          (rows ?? []).map((r) => [
+            r.distinct_id,
+            {
+              abandonment_rate_7d: Number(r.abandonment_rate_7d) || 0,
+              avg_cart_value_30d: Number(r.avg_cart_value_30d) || 0,
+            } satisfies CustomerFeatures,
+          ]),
+        );
+
+        // Populate cache (zero features for misses)
+        const toCache: Record<string, CustomerFeatures> = {};
+        for (const { distinctId, cacheKey } of group) {
+          toCache[cacheKey] = rowMap.get(distinctId) ?? { ...ZERO_FEATURES };
+        }
+        await this.cache.mSet(toCache, CACHE_TTL_SECONDS).catch(() => {});
+      } catch (err) {
+        this.logger.warn({ err, storeId, count: group.length }, 'FeatureService: batch prefetch failed (non-fatal)');
+        this.metrics.featureDegraded();
+      }
+    }
+  }
 }

@@ -51,7 +51,7 @@ export class DecisionMetrics {
    * Increments the lock acquisition failure counter.
    * Called when a Redis error forces fail-open in session or cart lock.
    */
-  lockAcquireFailed(type: 'session' | 'cart'): void {
+  lockAcquireFailed(type: 'session' | 'cart' | 'user'): void {
     void this.mc.recordCounter('lock_acquire_failed_total', 1, { type });
   }
 

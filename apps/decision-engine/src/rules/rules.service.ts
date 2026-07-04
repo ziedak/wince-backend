@@ -105,4 +105,36 @@ export class RuleEngine {
 
     return { shouldIntervene: false };
   }
+
+  /**
+   * Conservative fallback ladder for use when normal scoring cannot run
+   * (Redis unavailable, ClickHouse down, model not loaded).
+   *
+   * Per v2 spec §4.1 step 7:
+   *   cart > 3× minCartValue → 0.85
+   *   rage_click_count > 2  → 0.70
+   *   exit_intent event     → 0.60
+   *   otherwise             → no intervention
+   *
+   * Fallback decisions always log source: 'fallback' on the audit record.
+   */
+  evaluateFallback(event: EnrichedEvent, policy: Policy | null): EvaluationResult {
+    const minCart = policy?.minCartValue ?? 10;
+    const discountValue = policy?.discountValue ?? 10;
+    const cartValue = event.cart_value ?? 0;
+    // Prefer in-shop when session is available, otherwise route off-shop
+    const channel: InterventionChannel = event.session_available ? 'in_shop' : 'off_shop';
+    const type = channel === 'in_shop' ? ('popup' as const) : ('email' as const);
+
+    if (cartValue > minCart * 3) {
+      return { shouldIntervene: true, channel, type, value: discountValue, confidence: 0.85 };
+    }
+    if ((event.rage_click_count ?? 0) > 2) {
+      return { shouldIntervene: true, channel: 'in_shop', type: 'countdown', value: discountValue, confidence: 0.70 };
+    }
+    if (event.t === 'exit_intent') {
+      return { shouldIntervene: true, channel: 'in_shop', type: 'popup', value: discountValue, confidence: 0.60 };
+    }
+    return { shouldIntervene: false };
+  }
 }

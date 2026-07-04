@@ -1,9 +1,9 @@
 import {
   createConsumerClient,
   createProducerClient,
-  createAdminClient,
+  
 } from '@org/kafka_client';
-import type { ConsumerClient, ProducerClient, AdminClient } from '@org/kafka_client';
+import type { ConsumerClient, ProducerClient } from '@org/kafka_client';
 import { createLogger } from '@org/logger';
 import type { Logger } from '@org/logger';
 import { executeWithRetry } from '@org/utils';
@@ -30,7 +30,7 @@ export class AnalyticsConsumer {
   // Held for shutdown — set in start()
   private kafkaConsumer: ConsumerClient | null = null;
   private dlqProducer: ProducerClient | null = null;
-  private adminClient: AdminClient | null = null;
+  private adminClient: ProducerClient | null = null;
   private lagPollTimer: ReturnType<typeof setInterval> | null = null;
 
   // Shared batcher across eachBatch calls (accumulates rows up to batchSize)
@@ -71,7 +71,7 @@ export class AnalyticsConsumer {
       clientId: `${this.config.kafkaClientId}-dlq`,
     });
 
-    const adminClient = createAdminClient({
+    const adminClient = createProducerClient({
       brokers: this.config.kafkaBrokers,
       clientId: this.config.kafkaAdminClientId,
     });

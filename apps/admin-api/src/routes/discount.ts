@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { discountCodes, eq, and, isNull, gt, gte } from '@org/db';
+import { discountCodes, eq, and, isNull, gt } from '@org/db';
 import type { DbClient } from '../types';
 import type { RedisClient } from '@org/redis_client';
 
