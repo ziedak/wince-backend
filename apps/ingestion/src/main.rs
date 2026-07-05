@@ -70,7 +70,11 @@ async fn main() {
     );
 
     // ─── Phase 1: Prometheus metrics recorder ─────────────────────────────────
-    let prometheus_handle = metrics::setup_metrics_recorder();
+    let prometheus_handle = metrics::try_setup_metrics_recorder(metrics::ingestion_metrics_recorder_config())
+        .unwrap_or_else(|e| {
+            error!(error = %e, "Failed to install Prometheus metrics recorder");
+            std::process::exit(1);
+        });
 
     // ─── Health handle ────────────────────────────────────────────────────────
     let health = HealthHandle::new();

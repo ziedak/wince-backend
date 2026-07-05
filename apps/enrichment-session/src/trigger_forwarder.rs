@@ -6,14 +6,19 @@ const TRIGGER_EVENTS: [&str; 4] = ["checkout_abandon", "exit_intent", "rage_clic
 const FORWARD_TIMEOUT_MS: u64 = 500;
 
 pub struct TriggerForwarder {
+    client: reqwest::Client,
     trigger_url: String,
     internal_secret: String,
 }
 
 impl TriggerForwarder {
     pub fn new(decision_engine_url: String, internal_secret: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(FORWARD_TIMEOUT_MS))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let trigger_url = decision_engine_url.trim_end_matches('/').to_string() + "/v1/trigger";
-        Self { trigger_url, internal_secret }
+        Self { client, trigger_url, internal_secret }
     }
 
     /// Forward trigger events to decision-engine. Non-fatal, always resolves.
@@ -30,12 +35,7 @@ impl TriggerForwarder {
             }
         };
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(FORWARD_TIMEOUT_MS))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        let result = client
+        let result = self.client
             .post(&self.trigger_url)
             .header("Content-Type", "application/json")
             .header("X-Internal-Secret", &self.internal_secret)

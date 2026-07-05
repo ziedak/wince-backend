@@ -2,6 +2,8 @@ use std::sync::Arc;
 use metrics::{counter, histogram, gauge};
 use rust_postgre_client::QueryMetricsRecorder;
 
+pub use rust_shared_metrics::setup_metrics_recorder;
+
 /// Enrichment-specific Prometheus metrics wrapper.
 ///
 /// Also implements [`QueryMetricsRecorder`] so it can be passed to
@@ -33,7 +35,8 @@ impl EnrichmentMetrics {
         histogram!("enrichment_db_query_latency_seconds", "operation" => operation.to_string()).record(ms / 1000.0);
     }
 
-    #[inline]
+    /// Record consumer lag per partition. Call from an offset-tracking callback when available.
+    #[allow(dead_code)]
     pub fn kafka_lag(&self, partition: i32, lag: i64) {
         gauge!("enrichment_kafka_lag", "partition" => partition.to_string()).set(lag as f64);
     }

@@ -9,11 +9,12 @@ mod trigger_forwarder;
 mod metrics;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use envconfig::Envconfig;
 use tracing::{error, info};
 
 use config::AppConfig;
-use consumer::EnrichmentConsumer;
+use consumer::{EnrichmentConsumer, SharedConsumerState};
 use enricher::Enricher;
 use health::HealthServer;
 use idempotency::IdempotencyService;
@@ -40,6 +41,8 @@ async fn main() {
         "Starting enrichment-session service"
     );
 
+    let prometheus_handle = metrics::setup_metrics_recorder();
+
     let redis = Arc::new(RedisClient::open(config.redis_url.as_str()).unwrap_or_else(|e| {
         error!("Invalid Redis URL: {e}");
         std::process::exit(1);
@@ -64,15 +67,12 @@ async fn main() {
 
     let idempotency = Arc::new(IdempotencyService::new(
         redis.clone(),
+        db.clone(),
         metrics.clone(),
         config.bloom_filter_key.clone(),
     ));
-    let session = Arc::new(SessionService::new(redis.clone(), config.session_ttl_seconds, metrics.clone()));
-    let customer = Arc::new(CustomerService::new(
-        redis.clone(),
-        db,
-        metrics.clone(),
-    ));
+    let session = Arc::new(SessionService::new(redis.clone(), config.session_ttl_seconds));
+    let customer = Arc::new(CustomerService::new(redis.clone(), db.clone(), metrics.clone()));
     let enricher = Arc::new(Enricher::new(
         idempotency.clone(),
         session.clone(),
@@ -83,26 +83,64 @@ async fn main() {
         config.decision_engine_url.clone(),
         config.internal_secret.clone(),
     );
+
+    let consumer_state = SharedConsumerState::default();
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+
     let mut consumer = EnrichmentConsumer::new(
         config.clone(),
         enricher.clone(),
         idempotency.clone(),
         metrics.clone(),
         Some(Arc::new(trigger_forwarder)),
+        consumer_state.clone(),
+        shutdown_flag.clone(),
     );
-    let health_server = HealthServer::new(metrics.clone(), config.port);
 
-    let shutdown = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for ctrl-c");
-        info!("Shutdown signal received");
-    };
+    let health_server = HealthServer::new(
+        prometheus_handle,
+        config.port,
+        consumer_state,
+        redis,
+        db,
+    );
 
     health_server.start();
+
+    // Spawn signal handler — sets the atomic flag to break the consumer loop
+    // after the current message completes (graceful drain).
+    let flag = shutdown_flag.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        flag.store(true, Ordering::Release);
+        info!("Shutdown flag set — consumer will stop after current message");
+    });
+
     if let Err(e) = consumer.start().await {
         error!(error = %e, "Enrichment consumer stopped unexpectedly");
         std::process::exit(1);
     }
-    let _ = shutdown;
+
+    info!("Enrichment consumer shut down gracefully");
+}
+
+/// Resolves on SIGTERM (Unix) or SIGINT (Ctrl-C on all platforms).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
+        tokio::select! {
+            _ = sigterm.recv() => info!("SIGTERM received"),
+            _ = tokio::signal::ctrl_c() => info!("SIGINT received"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for ctrl-c");
+        info!("SIGINT received");
+    }
 }

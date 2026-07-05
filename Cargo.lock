@@ -2089,6 +2089,7 @@ dependencies = [
  "redis",
  "rusqlite",
  "rust-kafka_client",
+ "rust-shared-metrics",
  "serde",
  "serde_json",
  "thiserror",

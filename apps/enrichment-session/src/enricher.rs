@@ -27,7 +27,7 @@ impl Enricher {
         let distinct_id_for_context = raw.distinct_id.clone();
 
         // Check for duplicate
-        if self.idempotency.is_duplicate(&raw.event_id).await.unwrap_or(false) {
+        if self.idempotency.is_duplicate(&raw.event_id, raw.store_id).await.unwrap_or(false) {
             return EnrichResult::Duplicate;
         }
 
@@ -42,15 +42,20 @@ impl Enricher {
         // Session update — non-fatal; degrade to session_available: false on outage
         let mut session_state = None;
         let mut session_available = true;
-        if let Ok(state) = self.session.update_session(
+        let t0_session = std::time::Instant::now();
+        match self.session.update_session(
             &raw.session_id,
             &raw.event_type,
             cart_value_delta_for(&raw.event_type, raw.cart_value),
             now_ms,
         ).await {
-            session_state = Some(state);
-        } else {
-            session_available = false;
+            Ok(state) => {
+                self.metrics.db_query_latency("session_update", t0_session.elapsed().as_millis() as f64);
+                session_state = Some(state);
+            }
+            Err(_) => {
+                session_available = false;
+            }
         }
 
         let enriched = EnrichedEvent {
@@ -78,7 +83,10 @@ impl Enricher {
         let ctx = SessionContext {
             store_id: raw.store_id,
             customer_id: customer_data.as_ref().map(|c| c.id),
-            distinct_id: distinct_id_for_context,
+            distinct_id: distinct_id_for_context.clone(),
+            // anon mirrors distinct_id for anonymous visitors; uid is empty until auth resolves
+            anon: Some(distinct_id_for_context),
+            uid: None,
             email: customer_data.as_ref().and_then(|c| c.email.clone()),
             email_consent: customer_data.as_ref().map(|c| c.email_consent).unwrap_or(false),
             sms_consent: customer_data.as_ref().map(|c| c.sms_consent).unwrap_or(false),

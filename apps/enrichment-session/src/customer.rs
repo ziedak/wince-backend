@@ -47,13 +47,16 @@ impl CustomerService {
 
         let t0 = std::time::Instant::now();
 
-        // L2: PostgreSQL lookup
-        let row = self.db.fetch_opt::<CustomerRow>(
-            r#"SELECT id, email, lifetime_value, email_consent, sms_consent 
-               FROM customers 
-               WHERE store_id = $1 AND distinct_id = $2 
+        // L2: PostgreSQL lookup — use sqlx directly for parameterized queries
+        let row = sqlx::query_as::<_, CustomerRow>(
+            r#"SELECT id, email, lifetime_value, email_consent, sms_consent
+               FROM customers
+               WHERE store_id = $1 AND distinct_id = $2
                LIMIT 1"#,
         )
+        .bind(store_id)
+        .bind(distinct_id)
+        .fetch_optional(self.db.pool())
         .await
         .map_err(|e| CustomerError::DatabaseError(e.to_string()))?;
 
@@ -69,12 +72,15 @@ impl CustomerService {
             })
         } else {
             // Create anonymous customer
-            let created = self.db.fetch_opt::<CreatedCustomer>(
-                r#"INSERT INTO customers (store_id, distinct_id) 
-                   VALUES ($1, $2) 
-                   ON CONFLICT (store_id, distinct_id) DO NOTHING 
+            let created = sqlx::query_as::<_, CreatedCustomer>(
+                r#"INSERT INTO customers (store_id, distinct_id)
+                   VALUES ($1, $2)
+                   ON CONFLICT (store_id, distinct_id) DO NOTHING
                    RETURNING id"#,
             )
+            .bind(store_id)
+            .bind(distinct_id)
+            .fetch_optional(self.db.pool())
             .await
             .map_err(|e| CustomerError::DatabaseError(e.to_string()))?;
 
@@ -89,11 +95,15 @@ impl CustomerService {
 
         // Ensure identity mapping and cache
         if let Some(ref customer) = customer {
-            let _ = self.db.execute(
-                r#"INSERT INTO customer_identities (store_id, customer_id, distinct_id) 
-                   VALUES ($1, $2, $3) 
+            let _ = sqlx::query(
+                r#"INSERT INTO customer_identities (store_id, customer_id, distinct_id)
+                   VALUES ($1, $2, $3)
                    ON CONFLICT DO NOTHING"#,
             )
+            .bind(store_id)
+            .bind(customer.id)
+            .bind(distinct_id)
+            .execute(self.db.pool())
             .await;
 
             let _ = redis::cmd("SET")

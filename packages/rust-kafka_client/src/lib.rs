@@ -121,11 +121,13 @@ pub struct KafkaConsumerConfig {
 	pub heartbeat_interval: Duration,
 	pub auto_offset_reset: String,
 	pub enable_auto_commit: bool,
+	pub enable_auto_offset_store: bool,
 	pub enable_partition_eof: bool,
 	pub fetch_wait_max: Duration,
 	pub fetch_min_bytes: i32,
 	pub queued_min_messages: i32,
 	pub max_poll_interval: Duration,
+	pub max_poll_records: i32,
 	pub partition_assignment_strategy: String,
 	pub allow_auto_create_topics: bool,
 	pub isolation_level: Option<String>,
@@ -144,11 +146,13 @@ impl KafkaConsumerConfig {
 			heartbeat_interval: Duration::from_secs(3),
 			auto_offset_reset: "earliest".to_string(),
 			enable_auto_commit: false,
+			enable_auto_offset_store: false,
 			enable_partition_eof: false,
 			fetch_wait_max: Duration::from_millis(5),
 			fetch_min_bytes: 1,
 			queued_min_messages: 1,
 			max_poll_interval: Duration::from_secs(300),
+			max_poll_records: 500,
 			partition_assignment_strategy: "cooperative-sticky".to_string(),
 			allow_auto_create_topics: false,
 			isolation_level: None,
@@ -344,6 +348,16 @@ impl KafkaConsumer {
 		Ok(())
 	}
 
+	pub fn store_offset_from_message(&self, message: &BorrowedMessage<'_>) -> Result<()> {
+		self.consumer.store_offset_from_message(message)?;
+		Ok(())
+	}
+
+	pub fn commit_consumer_state(&self, mode: CommitMode) -> Result<()> {
+		self.consumer.commit_consumer_state(mode)?;
+		Ok(())
+	}
+
 	pub fn shutdown(self) {
 		self.consumer.unsubscribe();
 	}
@@ -393,6 +407,10 @@ fn build_consumer(config: &KafkaConsumerConfig) -> Result<StreamConsumer> {
 		config.heartbeat_interval.as_millis().to_string(),
 	);
 	client_config.set("enable.auto.commit", config.enable_auto_commit.to_string());
+	client_config.set(
+		"enable.auto.offset.store",
+		config.enable_auto_offset_store.to_string(),
+	);
 	client_config.set("auto.offset.reset", &config.auto_offset_reset);
 	client_config.set(
 		"enable.partition.eof",
@@ -405,6 +423,7 @@ fn build_consumer(config: &KafkaConsumerConfig) -> Result<StreamConsumer> {
 		"max.poll.interval.ms",
 		config.max_poll_interval.as_millis().to_string(),
 	);
+	client_config.set("max.poll.records", config.max_poll_records.to_string());
 	client_config.set(
 		"partition.assignment.strategy",
 		&config.partition_assignment_strategy,
@@ -456,9 +475,11 @@ mod tests {
 		let config = KafkaConsumerConfig::new(["localhost:9092"], "consumer-test", "group-a");
 
 		assert!(!config.enable_auto_commit);
+		assert!(!config.enable_auto_offset_store);
 		assert_eq!(config.auto_offset_reset, "earliest");
 		assert_eq!(config.partition_assignment_strategy, "cooperative-sticky");
 		assert_eq!(config.heartbeat_interval, Duration::from_secs(3));
+		assert_eq!(config.max_poll_records, 500);
 	}
 
 	#[test]

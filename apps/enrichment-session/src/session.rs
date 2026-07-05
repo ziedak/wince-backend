@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::metrics::EnrichmentMetrics;
-
 const RAGE_WINDOW_MS: i64 = 30_000;
 const RAGE_THRESHOLD: i32 = 3;
 const MAX_RAGE_TIMESTAMPS: usize = 10;
@@ -18,6 +16,10 @@ pub struct SessionContext {
     pub store_id: i32,
     pub customer_id: Option<i32>,
     pub distinct_id: String,
+    /// Anonymous visitor ID alias — falls back to distinct_id if not set.
+    pub anon: Option<String>,
+    /// Authenticated user ID (empty string when not authenticated).
+    pub uid: Option<String>,
     pub email: Option<String>,
     pub email_consent: bool,
     pub sms_consent: bool,
@@ -26,12 +28,11 @@ pub struct SessionContext {
 pub struct SessionService {
     redis: Arc<redis::Client>,
     ttl_seconds: u64,
-    metrics: Arc<EnrichmentMetrics>,
 }
 
 impl SessionService {
-    pub fn new(redis: Arc<redis::Client>, ttl_seconds: u64, metrics: Arc<EnrichmentMetrics>) -> Self {
-        Self { redis, ttl_seconds, metrics }
+    pub fn new(redis: Arc<redis::Client>, ttl_seconds: u64) -> Self {
+        Self { redis, ttl_seconds }
     }
 
     /// Update session with new event and return current session state.
@@ -117,6 +118,8 @@ impl SessionService {
             .map_err(|e| SessionError::RedisError(e.to_string()))?;
 
         let session_key = format!("session:{}", session_id);
+        let anon = ctx.anon.as_deref().unwrap_or(ctx.distinct_id.as_str()).to_string();
+        let uid = ctx.uid.as_deref().unwrap_or("").to_string();
         let _: () = redis::cmd("HSET")
             .arg(&session_key)
             .arg("store_id")
@@ -124,7 +127,11 @@ impl SessionService {
             .arg("customer_id")
             .arg(ctx.customer_id.map(|id| id.to_string()).unwrap_or_default())
             .arg("distinct_id")
-            .arg(ctx.distinct_id)
+            .arg(&ctx.distinct_id)
+            .arg("anon")
+            .arg(anon)
+            .arg("uid")
+            .arg(uid)
             .arg("email")
             .arg(ctx.email.unwrap_or_default())
             .arg("email_consent")
@@ -141,8 +148,12 @@ impl SessionService {
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
+    /// Stored in Redis for downstream consumers (decision-engine scheduler).
+    #[allow(dead_code)]
     pub cart_value: f64,
     pub rage_click_count: i32,
+    /// Stored in Redis for downstream consumers.
+    #[allow(dead_code)]
     pub last_activity: i64,
     pub is_frustrated: bool,
 }
