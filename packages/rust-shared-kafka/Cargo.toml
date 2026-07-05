@@ -1,7 +1,0 @@
-[package]
-name = "rust-shared-kafka"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rdkafka = { version = "0.36" }

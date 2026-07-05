@@ -31,8 +31,8 @@ rust-postgre_client = { path = "../../packages/rust-postgre_client" }
 rust-shared-types = { path = "../../packages/rust-shared-types" }
 rust-shared-logger = { path = "../../packages/rust-shared-logger" }
 rust-shared-metrics = { path = "../../packages/rust-shared-metrics" }
-rust-shared-redis = { path = "../../packages/rust-shared-redis" }
-rust-shared-kafka = { path = "../../packages/rust-shared-kafka" }
+rust-redis_client = { path = "../../packages/rust-redis_client" }
+rust-kafka_client = { path = "../../packages/rust-kafka_client" }
 
 [dev-dependencies]
 tokio-test = "0.4"

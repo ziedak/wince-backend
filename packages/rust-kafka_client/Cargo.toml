@@ -1,0 +1,12 @@
+[package]
+name = "rust-kafka_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures-util = "0.3"
+rdkafka = { version = "0.36" }
+serde = "1"
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"

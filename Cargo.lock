@@ -1222,11 +1222,11 @@ dependencies = [
  "rdkafka",
  "redis",
  "reqwest",
+ "rust-kafka_client",
  "rust-postgre_client",
- "rust-shared-kafka",
+ "rust-redis_client",
  "rust-shared-logger",
  "rust-shared-metrics",
- "rust-shared-redis",
  "rust-shared-types",
  "serde",
  "serde_json",
@@ -2089,6 +2089,7 @@ dependencies = [
  "rdkafka",
  "redis",
  "rusqlite",
+ "rust-kafka_client",
  "serde",
  "serde_json",
  "thiserror",
@@ -3126,6 +3127,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-kafka_client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rdkafka",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "rust-postgre_client"
 version = "0.1.0"
 dependencies = [
@@ -3139,10 +3152,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-shared-kafka"
+name = "rust-redis_client"
 version = "0.1.0"
 dependencies = [
- "rdkafka",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3158,13 +3177,6 @@ version = "0.1.0"
 dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
-]
-
-[[package]]
-name = "rust-shared-redis"
-version = "0.1.0"
-dependencies = [
- "redis",
 ]
 
 [[package]]

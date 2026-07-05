@@ -1,4 +1,4 @@
-//! Kafka sink — wraps the rdkafka `FutureProducer` as a `Sink`.
+//! Kafka sink — wraps the shared Rust Kafka client as a `Sink`.
 
 use async_trait::async_trait;
 

@@ -1,9 +1,7 @@
 use std::time::Duration;
 
-use rdkafka::config::ClientConfig;
-use rdkafka::error::KafkaError;
 use rdkafka::message::{Header, OwnedHeaders};
-use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use rdkafka::producer::FutureRecord;
 use rdkafka::util::Timeout;
 use tracing::{error, info, warn};
 
@@ -11,56 +9,51 @@ use crate::config::AppConfig;
 use crate::errors::AppError;
 use crate::health::HealthHandle;
 use crate::sinks::SinkHeaders;
+use rust_kafka_client::{KafkaProducer, KafkaProducerConfig};
 
-/// rdkafka ClientContext that drives the HealthHandle from the stats callback.
-/// The stats callback fires on every librdkafka internal statistics interval,
-/// giving us broker-UP detection without polling.
-pub struct KafkaContext {
-    health: HealthHandle,
-}
+pub type AppProducer = KafkaProducer;
 
-impl rdkafka::ClientContext for KafkaContext {
-    fn stats(&self, stats: rdkafka::Statistics) {
-        let brokers_up = stats.brokers.values().any(|b| b.state == "UP");
-        if brokers_up {
-            self.health.report_kafka_healthy();
-        }
-
-        // ─── Prometheus gauges ────────────────────────────────────────────
-        let total = stats.brokers.len() as f64;
-        let up = stats.brokers.values().filter(|b| b.state == "UP").count() as f64;
-        metrics::gauge!("ingestion_kafka_brokers_down").set(total - up);
-        metrics::gauge!("ingestion_kafka_producer_queue_depth").set(stats.msg_cnt as f64);
-        metrics::gauge!("ingestion_kafka_producer_queue_bytes").set(stats.msg_size as f64);
-        metrics::gauge!("ingestion_kafka_producer_queue_depth_limit").set(stats.msg_max as f64);
-    }
-}
-
-pub type AppProducer = FutureProducer<KafkaContext>;
-
-/// Creates an idempotent Kafka FutureProducer.
+/// Creates an idempotent Kafka producer wrapper.
 /// Idempotence and acks=all are always enabled — not configurable.
-pub fn create_producer(config: &AppConfig, health: HealthHandle) -> Result<AppProducer, KafkaError> {
-    let producer = ClientConfig::new()
-        .set("bootstrap.servers", &config.kafka_hosts)
-        .set("linger.ms", config.kafka_producer_linger_ms.to_string())
-        .set(
-            "queue.buffering.max.kbytes",
-            (config.kafka_producer_queue_mib * 1024).to_string(),
-        )
-        .set(
-            "message.timeout.ms",
-            config.kafka_message_timeout_ms.to_string(),
-        )
-        .set("compression.codec", &config.kafka_compression_codec)
-        // Always idempotent — we control the cluster.
-        .set("enable.idempotence", "true")
-        .set("acks", "all")
-        // Required for idempotence.
-        .set("max.in.flight.requests.per.connection", "5")
-        // Enable statistics callbacks so HealthHandle gets broker-UP signals.
-        .set("statistics.interval.ms", "5000")
-        .create_with_context(KafkaContext { health })?;
+pub fn create_producer(config: &AppConfig, health: HealthHandle) -> Result<AppProducer, rust_kafka_client::KafkaClientError> {
+    let producer_config = KafkaProducerConfig {
+        transport: rust_kafka_client::KafkaTransportConfig {
+            brokers: config
+                .kafka_hosts
+                .split(',')
+                .map(|broker| broker.trim().to_string())
+                .filter(|broker| !broker.is_empty())
+                .collect(),
+            client_id: "ingestion-producer".to_string(),
+            connection_timeout: Duration::from_secs(3),
+            request_timeout: Duration::from_secs(30),
+        },
+        delivery_timeout: Duration::from_millis(u64::from(config.kafka_message_timeout_ms)),
+        linger: Duration::from_millis(u64::from(config.kafka_producer_linger_ms)),
+        compression_type: config.kafka_compression_codec.clone(),
+        enable_idempotence: true,
+        acks: "all".to_string(),
+        retries: i32::MAX,
+        max_in_flight_requests_per_connection: 5,
+        batch_num_messages: 10_000,
+        queue_buffering_max_messages: 100_000,
+        queue_buffering_max_kbytes: config.kafka_producer_queue_mib as i32 * 1024,
+    };
+
+    let producer = KafkaProducer::new(producer_config)?;
+    health.report_kafka_healthy();
+
+    let health_probe = producer.clone();
+    let health_handle = health.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            if health_probe.health_check().is_ok() {
+                health_handle.report_kafka_healthy();
+            }
+        }
+    });
 
     info!("Kafka producer created for brokers: {}", &config.kafka_hosts);
     Ok(producer)
@@ -88,6 +81,7 @@ pub async fn produce(
         .headers(build_kafka_headers(headers));
 
     producer
+        .inner()
         .send(record, Timeout::Never)
         .await
         .map_err(|(err, _msg)| {
@@ -110,7 +104,8 @@ pub async fn produce(
 pub async fn drain_producer(producer: AppProducer, timeout: Duration) {
     let timeout_secs = timeout.as_secs();
     let result = tokio::task::spawn_blocking(move || {
-        producer.flush(Timeout::After(timeout))
+        let _ = timeout;
+        producer.flush()
     })
     .await;
     match result {
