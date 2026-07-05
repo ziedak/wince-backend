@@ -1,8 +1,6 @@
 use std::sync::Arc;
-use std::time::Instant;
 use metrics::{counter, histogram, gauge};
 use rust_postgre_client::QueryMetricsRecorder;
-use rust_shared_metrics::setup_metrics_recorder;
 
 /// Enrichment-specific Prometheus metrics wrapper.
 ///

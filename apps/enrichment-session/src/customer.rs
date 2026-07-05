@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use thiserror::Error;
-use rust_postgre_client::{PostgresClient, PostgresConfig, PostgresError};
+use rust_postgre_client::PostgresClient;
 use rust_shared_types::CustomerData;
 use crate::metrics::EnrichmentMetrics;
 
@@ -101,7 +101,7 @@ impl CustomerService {
                 .arg(serde_json::to_string(customer).unwrap())
                 .arg("EX")
                 .arg(CUSTOMER_CACHE_TTL)
-                .query_async(&mut con)
+                .query_async::<_, ()>(&mut con)
                 .await;
         }
 

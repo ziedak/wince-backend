@@ -23,6 +23,9 @@ impl Enricher {
 
     /// Enrich a raw event. Returns enriched event or duplicate marker.
     pub async fn enrich(&self, raw: RawEvent) -> EnrichResult {
+        let session_id_for_context = raw.session_id.clone();
+        let distinct_id_for_context = raw.distinct_id.clone();
+
         // Check for duplicate
         if self.idempotency.is_duplicate(&raw.event_id).await.unwrap_or(false) {
             return EnrichResult::Duplicate;
@@ -75,14 +78,14 @@ impl Enricher {
         let ctx = SessionContext {
             store_id: raw.store_id,
             customer_id: customer_data.as_ref().map(|c| c.id),
-            distinct_id: raw.distinct_id.clone(),
+            distinct_id: distinct_id_for_context,
             email: customer_data.as_ref().and_then(|c| c.email.clone()),
             email_consent: customer_data.as_ref().map(|c| c.email_consent).unwrap_or(false),
             sms_consent: customer_data.as_ref().map(|c| c.sms_consent).unwrap_or(false),
         };
         
         let session = self.session.clone();
-        let session_id = raw.session_id.clone();
+        let session_id = session_id_for_context;
         tokio::spawn(async move {
             if let Err(e) = session.set_context(&session_id, ctx).await {
                 tracing::warn!(error = %e, session_id = session_id, "setContext failed (non-fatal)");

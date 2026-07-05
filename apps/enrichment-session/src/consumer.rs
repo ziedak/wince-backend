@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use thiserror::Error;
 
 use crate::metrics::EnrichmentMetrics;
@@ -7,9 +7,17 @@ use crate::config::AppConfig;
 use crate::enricher::Enricher;
 use crate::idempotency::IdempotencyService;
 use crate::trigger_forwarder::TriggerForwarder;
-use rust_shared_types::{EnrichResult, EnrichedEvent};
-
-const RETRY_DELAYS_MS: &[u64] = &[100, 200, 400];
+use rust_shared_types::EnrichResult;
+use rust_kafka_client::{
+    create_consumer_client,
+    create_producer_client,
+    CommitMode,
+    KafkaConsumer,
+    KafkaConsumerConfig,
+    KafkaProducer,
+    KafkaProducerConfig,
+    Message,
+};
 
 #[derive(Error, Debug)]
 pub enum ConsumerError {
@@ -54,24 +62,20 @@ impl EnrichmentConsumer {
         }
     }
 
-    pub async fn start(&self) -> Result<(), ConsumerError> {
+    pub async fn start(&mut self) -> Result<(), ConsumerError> {
         let brokers = self.config.kafka_brokers_vec();
-        let consumer = rdkafka::ClientConfig::new()
-            .set("bootstrap.servers", &brokers.join(","))
-            .set("group.id", &self.config.kafka_consumer_group)
-            .set("session.timeout.ms", "30000")
-            .set("heartbeat.interval.ms", "3000")
-            .set("enable.auto.commit", "false")
-            .set("auto.offset.reset", "earliest")
-            .set("max.poll.records", self.config.max_poll_records.to_string())
-            .create::<rdkafka::consumer::StreamConsumer>()
-            .map_err(|e| ConsumerError::KafkaError(e.to_string()))?;
+        let consumer: KafkaConsumer = create_consumer_client(KafkaConsumerConfig::new(
+            brokers.clone(),
+            "enrichment-session",
+            self.config.kafka_consumer_group.clone(),
+        ))
+        .map_err(|e| ConsumerError::KafkaError(e.to_string()))?;
 
-        let producer = rdkafka::ClientConfig::new()
-            .set("bootstrap.servers", &brokers.join(","))
-            .set("client.id", "enrichment-session-producer")
-            .create::<rdkafka::producer::FutureProducer>()
-            .map_err(|e| ConsumerError::KafkaError(e.to_string()))?;
+        let producer: KafkaProducer = create_producer_client(KafkaProducerConfig::new(
+            brokers,
+            "enrichment-session-producer",
+        ))
+        .map_err(|e| ConsumerError::KafkaError(e.to_string()))?;
 
         consumer.subscribe(&[self.config.kafka_raw_topic.as_str()])
             .map_err(|e| ConsumerError::KafkaError(e.to_string()))?;
@@ -79,14 +83,12 @@ impl EnrichmentConsumer {
         self.state.subscribed = true;
         tracing::info!(topic = %self.config.kafka_raw_topic, "Subscribed to raw events topic");
 
-        let mut message_stream = consumer.stream();
-
-        while let Some(message_result) = message_stream.next().await {
+        loop {
             if self.is_shutting_down {
                 break;
             }
 
-            match message_result {
+            match consumer.recv().await {
                 Ok(message) => {
                     let key = message.key()
                         .map(|k| String::from_utf8_lossy(k).to_string())
@@ -113,21 +115,8 @@ impl EnrichmentConsumer {
 
                     let t0 = Instant::now();
 
-                    // Enrich with retry
-                    let result = match with_retry(
-                        || self.enricher.enrich(raw.clone()),
-                        RETRY_DELAYS_MS,
-                    ).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!(error = %e, event_id = %raw.event_id, "Enrichment failed after retries, backing off 5s");
-                            self.state.backing_off = true;
-                            tokio::time::sleep(Duration::from_millis(5000)).await;
-                            self.state.backing_off = false;
-                            self.metrics.events_processed("dropped");
-                            continue;
-                        }
-                    };
+                    // Enrich directly; this path is intentionally non-fallible.
+                    let result = self.enricher.enrich(raw.clone()).await;
 
                     match result {
                         EnrichResult::Duplicate => {
@@ -144,7 +133,14 @@ impl EnrichmentConsumer {
                                 }
                             };
 
-                            if let Err(e) = produce_message(&producer, &self.config.kafka_enriched_topic, &raw.session_id, &serialized).await {
+                            if let Err(e) = producer
+                                .send_raw(
+                                    &self.config.kafka_enriched_topic,
+                                    Some(&raw.session_id),
+                                    serialized.as_bytes(),
+                                )
+                                .await
+                            {
                                 tracing::error!(error = %e, event_id = %raw.event_id, "Produce failed, sending to DLQ");
                             } else {
                                 // Mark idempotent only after confirmed produce
@@ -168,9 +164,9 @@ impl EnrichmentConsumer {
                     }
 
                     // Commit offset
-                    consumer.store_offset(&message);
-                    consumer.commit_consumer_state(&mut std::io::empty())
-                        .ok();
+                    if let Err(e) = consumer.commit_message(&message, CommitMode::Async) {
+                        tracing::warn!(error = %e, "Failed to commit message");
+                    }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Message stream error");
@@ -178,51 +174,16 @@ impl EnrichmentConsumer {
             }
         }
 
+        consumer.shutdown();
+        if let Err(e) = producer.shutdown() {
+            tracing::warn!(error = %e, "Kafka producer shutdown failed");
+        }
+
         Ok(())
     }
 
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&mut self) {
         self.is_shutting_down = true;
         tracing::info!("Shutdown requested");
     }
-}
-
-/// Retry a future with exponential backoff.
-async fn with_retry<F, Fut, T, E>(mut f: F, delays_ms: &[u64]) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-{
-    for (attempt, &delay_ms) in delays_ms.iter().enumerate() {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                if attempt < delays_ms.len() {
-                    tracing::warn!(attempt = attempt + 1, error = %e, "Retrying after error");
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    }
-    unreachable!()
-}
-
-/// Produce a single message to Kafka.
-async fn produce_message(
-    producer: &rdkafka::producer::FutureProducer,
-    topic: &str,
-    key: &str,
-    payload: &str,
-) -> Result<(), ConsumerError> {
-    let record = rdkafka::producer::FutureRecord::to(topic)
-        .key(key)
-        .payload(payload);
-
-    producer.send(record, rdkafka::util::Timeout::Never)
-        .await
-        .map_err(|(e, _)| ConsumerError::KafkaError(e.to_string()))?;
-
-    Ok(())
 }

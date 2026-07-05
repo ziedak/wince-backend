@@ -2,7 +2,6 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::metrics::EnrichmentMetrics;
-use rust_shared_types::{CustomerData, RawEvent};
 
 #[derive(Error, Debug)]
 pub enum IdempotencyError {
@@ -52,7 +51,7 @@ impl IdempotencyService {
         let _: () = redis::cmd("BF.ADD")
             .arg(&self.bloom_key)
             .arg(event_id)
-            .query_async(&mut con)
+            .query_async::<_, ()>(&mut con)
             .await
             .map_err(|e| IdempotencyError::RedisError(e.to_string()))?;
 

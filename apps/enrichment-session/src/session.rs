@@ -3,6 +3,16 @@ use thiserror::Error;
 
 use crate::metrics::EnrichmentMetrics;
 
+const RAGE_WINDOW_MS: i64 = 30_000;
+const RAGE_THRESHOLD: i32 = 3;
+const MAX_RAGE_TIMESTAMPS: usize = 10;
+
+#[derive(Error, Debug)]
+pub enum SessionError {
+    #[error("Redis error: {0}")]
+    RedisError(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub store_id: i32,
@@ -41,18 +51,27 @@ impl SessionService {
 
         let mut pipe = redis::pipe();
         if cart_value_delta != 0.0 {
-            pipe.hincrbyfloat(&session_key, "cart_value", cart_value_delta);
+            pipe.cmd("HINCRBYFLOAT")
+                .arg(&session_key)
+                .arg("cart_value")
+                .arg(cart_value_delta);
         }
         if is_rage_click {
-            pipe.hincrby(&session_key, "rage_click_count", 1);
+            pipe.cmd("HINCRBY")
+                .arg(&session_key)
+                .arg("rage_click_count")
+                .arg(1);
         }
-        pipe.hset(&session_key, "last_activity", now_ms)
+        pipe.cmd("HSET")
+            .arg(&session_key)
+            .arg("last_activity")
+            .arg(now_ms)
             .expire(&session_key, self.ttl_seconds as i64)
             .zadd("active:sessions", now_ms, session_id);
         
         if is_rage_click {
             pipe.lpush(&rage_ts_key, now_ms)
-                .ltrim(&rage_ts_key, 0, (MAX_RAGE_TIMESTAMPS - 1) as i64)
+                .ltrim(&rage_ts_key, 0isize, (MAX_RAGE_TIMESTAMPS - 1) as isize)
                 .expire(&rage_ts_key, self.ttl_seconds as i64);
         }
 
@@ -77,7 +96,10 @@ impl SessionService {
 
         // Persist is_frustrated
         let mut pipe = redis::pipe();
-        pipe.hset(&session_key, "is_frustrated", if is_frustrated { "1" } else { "0" });
+        pipe.cmd("HSET")
+            .arg(&session_key)
+            .arg("is_frustrated")
+            .arg(if is_frustrated { "1" } else { "0" });
         let _: () = pipe.query_async(&mut con).await
             .map_err(|e| SessionError::RedisError(e.to_string()))?;
 
@@ -109,7 +131,7 @@ impl SessionService {
             .arg(if ctx.email_consent { "1" } else { "0" })
             .arg("sms_consent")
             .arg(if ctx.sms_consent { "1" } else { "0" })
-            .query_async(&mut con)
+            .query_async::<_, ()>(&mut con)
             .await
             .map_err(|e| SessionError::RedisError(e.to_string()))?;
 

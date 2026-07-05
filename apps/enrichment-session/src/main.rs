@@ -9,6 +9,7 @@ mod trigger_forwarder;
 mod metrics;
 
 use std::sync::Arc;
+use envconfig::Envconfig;
 use tracing::{error, info};
 
 use config::AppConfig;
@@ -82,7 +83,7 @@ async fn main() {
         config.decision_engine_url.clone(),
         config.internal_secret.clone(),
     );
-    let consumer = EnrichmentConsumer::new(
+    let mut consumer = EnrichmentConsumer::new(
         config.clone(),
         enricher.clone(),
         idempotency.clone(),
@@ -99,6 +100,9 @@ async fn main() {
     };
 
     health_server.start();
-    consumer.start().await;
+    if let Err(e) = consumer.start().await {
+        error!(error = %e, "Enrichment consumer stopped unexpectedly");
+        std::process::exit(1);
+    }
     let _ = shutdown;
 }

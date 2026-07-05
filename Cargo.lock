@@ -1219,7 +1219,6 @@ dependencies = [
  "envconfig",
  "metrics",
  "metrics-exporter-prometheus",
- "rdkafka",
  "redis",
  "reqwest",
  "rust-kafka_client",

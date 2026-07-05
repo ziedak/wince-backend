@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures_util::future::try_join_all;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
@@ -20,6 +20,9 @@ use serde::Serialize;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, KafkaClientError>;
+
+pub use rdkafka::consumer::CommitMode;
+pub use rdkafka::message::Message;
 
 /// Common transport settings shared by producer and consumer clients.
 #[derive(Clone, Debug)]
