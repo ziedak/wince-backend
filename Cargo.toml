@@ -3,6 +3,13 @@
 resolver = '2'
 members = [
 	'apps/ingestion',
+	'apps/enrichment-session',
+	'packages/rust-postgre_client',
+	'packages/rust-shared-kafka',
+	'packages/rust-shared-logger',
+	'packages/rust-shared-metrics',
+	'packages/rust-shared-redis',
+	'packages/rust-shared-types',
 ]
 
 [profile.release]

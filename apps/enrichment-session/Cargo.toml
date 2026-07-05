@@ -1,0 +1,38 @@
+[package]
+name = "enrichment-session"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enrichment-session"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+rdkafka = { version = "0.36" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+envconfig = "0.10"
+uuid = { version = "1", features = ["v4", "v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+axum = { version = "0.7", features = ["json", "macros"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "timeout"] }
+anyhow = "1"
+sqlx = {version= "0.7",  features = ["runtime-tokio-rustls", "postgres", "macros", "chrono"] }
+# Crates internes
+rust-postgre_client = { path = "../../packages/rust-postgre_client" }
+rust-shared-types = { path = "../../packages/rust-shared-types" }
+rust-shared-logger = { path = "../../packages/rust-shared-logger" }
+rust-shared-metrics = { path = "../../packages/rust-shared-metrics" }
+rust-shared-redis = { path = "../../packages/rust-shared-redis" }
+rust-shared-kafka = { path = "../../packages/rust-shared-kafka" }
+
+[dev-dependencies]
+tokio-test = "0.4"

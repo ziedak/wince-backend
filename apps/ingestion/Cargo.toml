@@ -46,7 +46,7 @@ opentelemetry_sdk = { version = "0.22", features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.15", features = ["tonic"] }
 tracing-opentelemetry = "0.23"
 # S3 WAL — durable SQLite write-ahead log for crash recovery
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.29", features = ["bundled"] } # Downgraded from 0.31 to align system libraries
 
 [dev-dependencies]
 tokio-test = "0.4"
