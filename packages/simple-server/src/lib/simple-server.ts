@@ -1,5 +1,6 @@
 import * as http from 'node:http';
-import type { IMetrics } from '@org/types';
+import { IMetricCollection } from './IMetricCollection.interface';
+
 
 export type HealthCheck = { name: string; ok: boolean; error?: string };
 export class SimpleServer {
@@ -7,7 +8,7 @@ export class SimpleServer {
 
   constructor(
     private readonly port: number,
-    private readonly metrics: IMetrics,
+    private readonly metrics: IMetricCollection,
   ) {
     this.server = http.createServer((req, res) => {
       void this.handle(req, res);
@@ -49,7 +50,6 @@ export class SimpleServer {
           .end(body);
         return;
       }
-
       res.writeHead(404).end('not found');
     } catch (err) {
       if (!res.headersSent) {

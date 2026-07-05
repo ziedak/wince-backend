@@ -16,9 +16,9 @@
     }
   },
   "dependencies": {
-    "pg": "^8.0.0"
+    "pg": "*"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.0"
+    "@types/pg": "*"
   }
 }

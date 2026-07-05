@@ -20,11 +20,11 @@
     "migrate": "bunx --bun drizzle-kit migrate"
   },
   "dependencies": {
-    "drizzle-orm": "^0.40.0",
-    "pg": "^8.0.0"
+    "drizzle-orm": "*",
+    "pg": "*"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.30.0",
-    "@types/pg": "^8.11.0"
+    "drizzle-kit": "*",
+    "@types/pg": "*"
   }
 }

@@ -16,10 +16,9 @@
     }
   },
   "dependencies": {
-    "@clickhouse/client": "^1.0.0",
+    "@clickhouse/client": "*",
     "@org/logger": "workspace:*",
     "@org/utils": "workspace:*",
-    "@org/monitoring": "workspace:*",
-    "@org/cache": "workspace:*"
+    "@org/types": "workspace:*"
   }
 }

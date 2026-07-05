@@ -78,9 +78,10 @@
     "@org/kafka_client": "*",
     "@org/logger": "*",
     "@org/monitoring": "*",
+    "@org/onnx-runtime": "*",
     "@org/redis_client": "*",
     "@org/types": "*",
-    "cockatiel": "4.0.0",
-    "onnxruntime-node": "^1.18.0"
+    "cockatiel": "*",
+    "onnxruntime-node": "*"
   }
 }

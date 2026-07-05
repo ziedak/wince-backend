@@ -1,49 +1,19 @@
 {
-  "extends": "./tsconfig.base.json",
   "compileOnSave": false,
+  "extends": "./tsconfig.base.json",
   "files": [],
   "references": [
     {
-      "path": "./packages/redis_client"
-    },
-    {
-      "path": "./packages/kafka_client"
-    },
-    {
-      "path": "./packages/postgre_client"
-    },
-    {
-      "path": "./packages/logger"
-    },
-    {
-      "path": "./packages/clickhouse_client"
-    },
-    {
-      "path": "./packages/types"
-    },
-    {
-      "path": "./packages/utils"
+      "path": "./apps/admin-api"
     },
     {
       "path": "./apps/analytics-consumer"
     },
     {
-      "path": "./packages/cache"
-    },
-    {
-      "path": "./packages/monitoring"
-    },
-    {
-      "path": "./packages/db"
+      "path": "./apps/decision-engine"
     },
     {
       "path": "./apps/enrichment-session"
-    },
-    {
-      "path": "./packages/http-client"
-    },
-    {
-      "path": "./packages/simple-server"
     },
     {
       "path": "./apps/frontend-e2e"
@@ -58,10 +28,43 @@
       "path": "./apps/notification-service"
     },
     {
-      "path": "./apps/decision-engine"
+      "path": "./packages/cache"
     },
     {
-      "path": "./apps/admin-api"
+      "path": "./packages/clickhouse_client"
+    },
+    {
+      "path": "./packages/db"
+    },
+    {
+      "path": "./packages/http-client"
+    },
+    {
+      "path": "./packages/kafka_client"
+    },
+    {
+      "path": "./packages/logger"
+    },
+    {
+      "path": "./packages/monitoring"
+    },
+    {
+      "path": "./packages/postgre_client"
+    },
+    {
+      "path": "./packages/redis_client"
+    },
+    {
+      "path": "./packages/simple-server"
+    },
+    {
+      "path": "./packages/types"
+    },
+    {
+      "path": "./packages/utils"
+    },
+    {
+      "path": "./packages/onnx-runtime"
     }
   ]
 }

@@ -19,6 +19,6 @@
     "@org/logger": "workspace:*",
     "@org/redis_client": "workspace:*",
     "@org/utils": "workspace:*",
-    "lru-cache": "^11.5.1"
+    "lru-cache": "*"
   }
 }

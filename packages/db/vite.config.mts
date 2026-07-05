@@ -1,44 +1,14 @@
-/// <reference types='vitest' />
-import { defineConfig } from 'vite';
-import dts from 'vite-plugin-dts';
-import * as path from 'path';
+import path from 'node:path'
+import { createLibraryViteConfig } from '../../vite/index.js'
 
-export default defineConfig(() => ({
-  root: import.meta.dirname,
+const root = import.meta.dirname
+
+export default createLibraryViteConfig({
+  root,
   cacheDir: '../../node_modules/.vite/packages/db',
-  plugins: [
-    dts({
-      entryRoot: 'src',
-      tsconfigPath: path.join(import.meta.dirname, 'tsconfig.lib.json'),
-    }),
-  ],
-  build: {
-    outDir: './dist',
-    emptyOutDir: true,
-    reportCompressedSize: true,
-    commonjsOptions: {
-      transformMixedEsModules: true,
-    },
-    lib: {
-      entry: 'src/index.ts',
-      name: '@org/db',
-      fileName: 'index',
-      formats: ['es' as const],
-    },
-    rollupOptions: {
-      external: ['drizzle-orm', 'drizzle-orm/node-postgres', 'pg'],
-    },
-  },
-  test: {
-    name: '@org/db',
-    watch: false,
-    globals: true,
-    environment: 'node',
-    include: ['{src,tests}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
-    reporters: ['default'],
-    coverage: {
-      reportsDirectory: './test-output/vitest/coverage',
-      provider: 'v8' as const,
-    },
-  },
-}));
+  entry: 'src/index.ts',
+  name: '@org/db',
+  tsconfigPath: path.join(root, 'tsconfig.lib.json'),
+  outDir: './dist',
+  external: ['drizzle-orm', 'drizzle-orm/node-postgres', 'pg'],
+})

@@ -1,10 +1,8 @@
 import { createClient, ClickHouseClient as CHClient } from '@clickhouse/client';
 import { createLogger } from '@org/logger';
 import { executeWithRetry } from '@org/utils';
-import { IMetricsCollector } from "@org/monitoring";
-
+import { IMetricsCollector ,ICache} from "@org/types";
 import { createHash } from 'crypto';
-import { ICache } from '@org/cache';
 
 export interface IClickHouseConfig {
   url: string;

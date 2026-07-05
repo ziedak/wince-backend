@@ -1,8 +1,7 @@
 import * as http from 'node:http';
 import { createLogger } from '@org/logger';
 import type { InterventionType, InterventionChannel } from '@org/types';
-import type { DecisionOrchestrator } from '../intervention/intervention.service.js';
-import type { SessionFeaturesService } from '../session-features/session-features.service.js';
+import { DecisionOrchestrator, SessionFeaturesService } from '../services';
 
 /**
  * Handles internal admin endpoints — never exposed through Kong.

@@ -1,7 +1,7 @@
 import { createLogger } from '@org/logger';
-import type { SchedulerService } from './scheduler.service.js';
-import type { SessionFeaturesService } from '../session-features/session-features.service.js';
-import type { DecisionOrchestrator } from '../intervention/intervention.service.js';
+import { SessionFeaturesService, DecisionOrchestrator } from '../services';
+import { SchedulerService } from '../services/scheduler.service';
+
 
 /** Maximum time (ms) allowed for a single session's full decision pipeline per tick. */
 const SESSION_PROCESS_TIMEOUT_MS = 5_000;

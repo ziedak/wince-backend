@@ -1,13 +1,13 @@
-import pino, { type Logger as PinoLogger } from 'pino';
+import pino, { type Logger as PinoLogger } from 'pino'
 
-export type Logger = PinoLogger;
+export type Logger = PinoLogger
 
 export interface LoggerOptions {
-  service: string;
+  service: string
   /** Optional fixed store_id to bind to every log line */
-  store_id?: number;
+  store_id?: number
   /** Log level — defaults to LOG_LEVEL env var or 'info' */
-  level?: string;
+  level?: string
 }
 
 /**
@@ -16,11 +16,11 @@ export interface LoggerOptions {
  * and optionally `store_id`.
  */
 export function createLogger(options: LoggerOptions): Logger {
-  const level = options.level ?? process.env['LOG_LEVEL'] ?? 'info';
+  const level = options.level ?? process.env['LOG_LEVEL'] ?? 'info'
 
-  const bindings: Record<string, unknown> = { service: options.service };
+  const bindings: Record<string, unknown> = { service: options.service }
   if (options.store_id !== undefined) {
-    bindings['store_id'] = options.store_id;
+    bindings['store_id'] = options.store_id
   }
 
   return pino({
@@ -29,10 +29,10 @@ export function createLogger(options: LoggerOptions): Logger {
     timestamp: pino.stdTimeFunctions.isoTime,
     formatters: {
       level(label) {
-        return { level: label };
+        return { level: label }
       },
     },
-  });
+  })
 }
 
 /**
@@ -40,6 +40,5 @@ export function createLogger(options: LoggerOptions): Logger {
  * Use at the request boundary to propagate a trace through log lines.
  */
 export function withTraceId(logger: Logger, traceId: string): Logger {
-  return logger.child({ trace_id: traceId });
+  return logger.child({ trace_id: traceId })
 }
-

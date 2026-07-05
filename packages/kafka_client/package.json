@@ -17,6 +17,6 @@
   },
   "dependencies": {
     "@org/types": "*",
-    "kafkajs": "^2.0.0"
+    "kafkajs": "*"
   }
 }

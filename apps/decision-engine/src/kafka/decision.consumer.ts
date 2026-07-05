@@ -4,10 +4,11 @@ import { createLogger } from '@org/logger';
 import type { Logger } from '@org/logger';
 import type { EnrichedEvent } from '@org/types';
 import type { Config } from '../config.js';
-import type { DecisionOrchestrator } from '../intervention/intervention.service.js';
-import type { DecisionMetrics } from '../metrics.js';
-import type { LockService } from '../lock/lock.service.js';
-import type { SchedulerService } from '../scheduler/scheduler.service.js';
+import { DecisionMetrics } from '../metrics.js';
+import { DecisionOrchestrator } from '../services/intervention.service.js';
+import { LockService } from '../services/lock.service.js';
+import { SchedulerService } from '../services/scheduler.service.js';
+
 
 /** Event types that may trigger an intervention. All other types are ignored. */
 const TRIGGER_EVENTS = new Set(['checkout_abandon', 'exit_intent', 'idle_timeout']);

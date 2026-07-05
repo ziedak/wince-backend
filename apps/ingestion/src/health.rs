@@ -108,8 +108,8 @@ pub async fn readiness_handler() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
-    use std::time::Duration;
+    // use std::thread;
+    // use std::time::Duration;
 
     #[test]
     fn never_seen_is_not_healthy() {

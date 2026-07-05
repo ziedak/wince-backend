@@ -16,10 +16,8 @@
     }
   },
   "dependencies": {
-      "axios": "1.18.0",
-      "@org/utils": "*"
-    },
-    "devDependencies": {
-      
-  }
+    "axios": "*",
+    "@org/utils": "*"
+  },
+  "devDependencies": {}
 }

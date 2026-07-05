@@ -4,8 +4,9 @@
     "rootDir": "src",
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
-    "emitDeclarationOnly": true,
     "forceConsistentCasingInFileNames": true,
+    "emitDeclarationOnly": true, // <-- Très important : génère uniquement les types (.d.ts)
+    "declaration": true,
     "types": ["node", "vite/client"]
   },
   "include": ["src/**/*.ts"],

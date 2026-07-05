@@ -15,7 +15,5 @@
       "default": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@org/types": "workspace:*"
-  }
+  "dependencies": {}
 }

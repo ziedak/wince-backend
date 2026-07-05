@@ -1,6 +1,6 @@
 // import { getEnv, getNumberEnv, getBooleanEnv } from "@libs/config";
 import { createLogger } from '@org/logger';
-import { ICache } from '@org/cache';
+import { IMetricsCollector ,ICache} from '@org/types';
 
 import {
   IHealthCheckResult,
@@ -14,7 +14,6 @@ import {
   IClickHouseClient,
   IClickHouseConfig,
 } from './clickhouseClient.js';
-import { IMetricsCollector } from '@org/monitoring';
 
 /**
  * Configuration for ClickHouse connection pool.
@@ -64,6 +63,7 @@ export interface ClickHousePoolStats {
 export class PooledClickHouseConnection implements IClickHouseClient {
   private lastUsed: number = Date.now();
   private connectionHealthy = true;
+  private checkedOut = false;
   private readonly logger = createLogger({
     service: 'PooledClickHouseConnection',
   });
@@ -95,12 +95,33 @@ export class PooledClickHouseConnection implements IClickHouseClient {
   }
 
   /**
+   * Marks the connection as checked out from the pool.
+   */
+  markCheckedOut(): void {
+    this.checkedOut = true;
+  }
+
+  /**
+   * Marks the connection as available for reuse.
+   */
+  markAvailable(): void {
+    this.checkedOut = false;
+  }
+
+  /**
    * Checks if the connection is currently healthy.
    * @returns true if the connection is healthy and can be reused
    * @internal Used by the connection pool manager
    */
   isConnectionHealthy(): boolean {
     return this.connectionHealthy;
+  }
+
+  /**
+   * Checks if the connection is currently checked out from the pool.
+   */
+  isCheckedOut(): boolean {
+    return this.checkedOut;
   }
 
   /**
@@ -279,6 +300,7 @@ export class ClickHouseConnectionPoolManager {
     resolve: (connection: PooledClickHouseConnection) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
+    startedAt: number;
   }> = [];
   private isShuttingDown = false;
   private healthCheckTimer?: NodeJS.Timeout;
@@ -369,7 +391,7 @@ export class ClickHouseConnectionPoolManager {
       username: config?.username ?? 'default',
       password: config?.password ?? '',
       database: config?.database ?? 'analytics',
-      requestTimeout: config?.requestTimeout ?? 30000,
+      requestTimeout: config?.requestTimeout ?? this.config.connectionTimeout,
       maxOpenConnections: this.config.maxConnections,
       compression: {
         response: config?.compression?.response ?? true,
@@ -418,7 +440,6 @@ export class ClickHouseConnectionPoolManager {
           error,
           `Failed to create initial connection ${i + 1}`,
         );
-        this.connectionErrors++;
       }
     }
 
@@ -450,17 +471,28 @@ export class ClickHouseConnectionPoolManager {
     const pooledConnection = new PooledClickHouseConnection(client, this);
 
     // Test the connection
-    try {
-      const isHealthy = await client.ping();
-      if (!isHealthy) {
-        throw new Error('Connection ping failed');
+    let lastError: unknown;
+    const attempts = Math.max(1, this.config.retryAttempts + 1);
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const isHealthy = await client.ping();
+        if (isHealthy) {
+          return pooledConnection;
+        }
+
+        lastError = new Error('Connection ping failed');
+      } catch (error) {
+        lastError = error;
       }
-    } catch (error) {
-      this.connectionErrors++;
-      throw new Error(`Failed to create connection: ${error}`);
+
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, this.config.retryDelay));
+      }
     }
 
-    return pooledConnection;
+    this.connectionErrors++;
+    throw new Error(`Failed to create connection: ${lastError}`);
   }
 
   /**
@@ -507,8 +539,11 @@ export class ClickHouseConnectionPoolManager {
     const startTime = Date.now();
 
     // Try to get an idle connection first
-    const idleConnection = this.pool.find((conn) => conn.isConnectionHealthy());
+    const idleConnection = this.pool.find(
+      (conn) => conn.isConnectionHealthy() && !conn.isCheckedOut(),
+    );
     if (idleConnection) {
+      idleConnection.markCheckedOut();
       idleConnection.markUsed();
       this.recordWaitTime(Date.now() - startTime);
       await this.recordPoolMetrics();
@@ -521,13 +556,13 @@ export class ClickHouseConnectionPoolManager {
         const newConnection = await this.createConnection(this.baseConfig);
         this.pool.push(newConnection);
         this.activeConnections++;
+        newConnection.markCheckedOut();
         newConnection.markUsed();
         this.recordWaitTime(Date.now() - startTime);
         await this.recordPoolMetrics();
         return newConnection;
       } catch (error) {
         this.logger.error(error, 'Failed to create new connection');
-        this.connectionErrors++;
       }
     }
 
@@ -548,7 +583,7 @@ export class ClickHouseConnectionPoolManager {
         );
       }, this.config.acquireTimeout);
 
-      this.pendingAcquires.push({ resolve, reject, timeout });
+      this.pendingAcquires.push({ resolve, reject, timeout, startedAt: startTime });
     });
   }
 
@@ -576,8 +611,8 @@ export class ClickHouseConnectionPoolManager {
   ): Promise<void> {
     if (this.isShuttingDown) {
       // Close the connection if shutting down
+      this.removeConnectionFromPool(connection);
       await connection.disconnect();
-      this.activeConnections--;
       await this.recordPoolMetrics();
       return;
     }
@@ -585,13 +620,18 @@ export class ClickHouseConnectionPoolManager {
     // Check if there are pending acquires
     const pending = this.pendingAcquires.shift();
     if (pending) {
+      clearTimeout(pending.timeout);
+      connection.markCheckedOut();
       connection.markUsed();
+      this.recordWaitTime(Date.now() - pending.startedAt);
+      await this.recordPoolMetrics();
       pending.resolve(connection);
       return;
     }
 
     // Return to pool if under minimum connections or recently used
     const timeSinceLastUse = Date.now() - connection.getLastUsed();
+    connection.markAvailable();
     if (
       this.pool.length < this.config.minConnections ||
       timeSinceLastUse < this.config.idleTimeout
@@ -601,8 +641,8 @@ export class ClickHouseConnectionPoolManager {
     }
 
     // Close excess connection
+    this.removeConnectionFromPool(connection);
     await connection.disconnect();
-    this.activeConnections--;
     await this.recordPoolMetrics();
   }
 
@@ -636,17 +676,19 @@ export class ClickHouseConnectionPoolManager {
    * ```
    */
   getPoolStats(): ClickHousePoolStats {
-    const idleConnections = this.pool.length;
+    const checkedOutConnections = this.pool.filter(
+      (conn) => conn.isCheckedOut(),
+    ).length;
+    const idleConnections = this.pool.length - checkedOutConnections;
     const utilization =
-      this.activeConnections > 0
-        ? (this.activeConnections /
-            (this.activeConnections + idleConnections)) *
+      this.pool.length > 0
+        ? (checkedOutConnections / this.pool.length) *
           100
         : 0;
 
     return {
-      totalConnections: this.activeConnections,
-      activeConnections: this.activeConnections - idleConnections,
+      totalConnections: this.pool.length,
+      activeConnections: checkedOutConnections,
       idleConnections,
       pendingAcquires: this.pendingAcquires.length,
       poolUtilization: utilization,
@@ -673,6 +715,10 @@ export class ClickHouseConnectionPoolManager {
     const unhealthyConnections: PooledClickHouseConnection[] = [];
 
     for (const connection of this.pool) {
+      if (connection.isCheckedOut()) {
+        continue;
+      }
+
       try {
         const isHealthy = await connection.ping();
         if (!isHealthy) {
@@ -723,6 +769,19 @@ export class ClickHouseConnectionPoolManager {
   private recordWaitTime(waitTime: number): void {
     this.totalWaitTime += waitTime;
     this.totalWaits++;
+  }
+
+  /**
+   * Removes a connection from the tracked pool if it exists.
+   */
+  private removeConnectionFromPool(
+    connection: PooledClickHouseConnection,
+  ): void {
+    const index = this.pool.indexOf(connection);
+    if (index !== -1) {
+      this.pool.splice(index, 1);
+      this.activeConnections--;
+    }
   }
 
   /**
