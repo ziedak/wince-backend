@@ -41,9 +41,21 @@ impl EnrichmentMetrics {
         gauge!("enrichment_kafka_lag", "partition" => partition.to_string()).set(lag as f64);
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub fn bloom_false_positive(&self) {
         counter!("enrichment_redis_bloom_false_positive").increment(1);
+    }
+
+    #[inline]
+    pub fn redis_latency(&self, operation: &str, ms: f64) {
+        histogram!("enrichment_redis_latency_seconds", "operation" => operation.to_string())
+            .record(ms / 1000.0);
+    }
+
+    #[inline]
+    pub fn feature_extraction_time(&self, ms: f64) {
+        histogram!("enrichment_feature_extraction_time_seconds").record(ms / 1000.0);
     }
 }
 

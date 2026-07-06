@@ -21,6 +21,7 @@ pub struct AppConfig {
     pub redis_url: String,
 
     #[envconfig(from = "REDIS_BLOOM_KEY", default = "idem:bloom")]
+    #[allow(dead_code)]
     pub bloom_filter_key: String,
 
     #[envconfig(
@@ -50,6 +51,18 @@ pub struct AppConfig {
 
     #[envconfig(from = "LOG_LEVEL", default = "info")]
     pub log_level: String,
+
+    /// Time-based window TTL in seconds (events older than this are trimmed from sorted sets).
+    #[envconfig(from = "SESSION_WINDOW_TTL_SECONDS", default = "300")]
+    pub session_window_ttl_seconds: u64,
+
+    /// Idempotency SETNX key TTL in seconds (prevents duplicate processing within this window).
+    #[envconfig(from = "IDEMPOTENCY_TTL_SECONDS", default = "300")]
+    pub idempotency_ttl_seconds: u64,
+
+    /// Decay factor α for EWMA velocity features (0 < α ≤ 1; lower = slower adaptation).
+    #[envconfig(from = "EWMA_ALPHA", default = "0.1")]
+    pub ewma_alpha: f64,
 }
 
 impl AppConfig {

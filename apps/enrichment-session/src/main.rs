@@ -2,7 +2,8 @@ mod config;
 mod consumer;
 mod enricher;
 mod health;
-mod idempotency;
+#[path = "idempotency.rs"]
+mod window;
 mod session;
 mod customer;
 mod trigger_forwarder;
@@ -17,7 +18,7 @@ use config::AppConfig;
 use consumer::{EnrichmentConsumer, SharedConsumerState};
 use enricher::Enricher;
 use health::HealthServer;
-use idempotency::IdempotencyService;
+use window::WindowService;
 use metrics::EnrichmentMetrics;
 use redis::Client as RedisClient;
 use rust_postgre_client::{MetricsHandle, PostgresClient, PostgresConfig};
@@ -65,16 +66,18 @@ async fn main() {
             }),
     );
 
-    let idempotency = Arc::new(IdempotencyService::new(
+    let window_service = Arc::new(WindowService::new(
         redis.clone(),
-        db.clone(),
+        config.session_window_ttl_seconds,
+        config.session_ttl_seconds,
+        config.idempotency_ttl_seconds,
+        config.ewma_alpha,
         metrics.clone(),
-        config.bloom_filter_key.clone(),
     ));
     let session = Arc::new(SessionService::new(redis.clone(), config.session_ttl_seconds));
     let customer = Arc::new(CustomerService::new(redis.clone(), db.clone(), metrics.clone()));
     let enricher = Arc::new(Enricher::new(
-        idempotency.clone(),
+        window_service.clone(),
         session.clone(),
         customer.clone(),
         metrics.clone(),
@@ -90,7 +93,6 @@ async fn main() {
     let mut consumer = EnrichmentConsumer::new(
         config.clone(),
         enricher.clone(),
-        idempotency.clone(),
         metrics.clone(),
         Some(Arc::new(trigger_forwarder)),
         consumer_state.clone(),

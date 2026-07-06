@@ -7,7 +7,6 @@ use serde::Serialize;
 use crate::metrics::EnrichmentMetrics;
 use crate::config::AppConfig;
 use crate::enricher::Enricher;
-use crate::idempotency::IdempotencyService;
 use crate::trigger_forwarder::TriggerForwarder;
 use rust_shared_types::EnrichResult;
 use rust_kafka_client::{
@@ -51,7 +50,6 @@ pub struct SharedConsumerState {
 pub struct EnrichmentConsumer {
     config: AppConfig,
     enricher: Arc<Enricher>,
-    idempotency: Arc<IdempotencyService>,
     metrics: Arc<EnrichmentMetrics>,
     trigger_forwarder: Option<Arc<TriggerForwarder>>,
     state: SharedConsumerState,
@@ -62,13 +60,12 @@ impl EnrichmentConsumer {
     pub fn new(
         config: AppConfig,
         enricher: Arc<Enricher>,
-        idempotency: Arc<IdempotencyService>,
         metrics: Arc<EnrichmentMetrics>,
         trigger_forwarder: Option<Arc<TriggerForwarder>>,
         state: SharedConsumerState,
         shutdown_flag: Arc<AtomicBool>,
     ) -> Self {
-        Self { config, enricher, idempotency, metrics, trigger_forwarder, state, shutdown_flag }
+        Self { config, enricher, metrics, trigger_forwarder, state, shutdown_flag }
     }
 
     pub async fn start(&mut self) -> Result<(), ConsumerError> {
@@ -145,7 +142,6 @@ impl EnrichmentConsumer {
                         }
                     };
 
-                    let t0 = Instant::now();
                     let result = self.enricher.enrich(raw.clone()).await;
 
                     match result {
@@ -167,17 +163,12 @@ impl EnrichmentConsumer {
 
                             match retry_produce(&producer, &self.config.kafka_enriched_topic, &raw.session_id, serialized.as_bytes()).await {
                                 Ok(()) => {
-                                    // Mark idempotent only after confirmed produce — preserves at-least-once
-                                    if let Err(e) = self.idempotency.mark_processed(&raw.event_id, raw.store_id).await {
-                                        tracing::warn!(error = %e, event_id = %raw.event_id, "Failed to mark processed");
-                                    }
                                     // Fast-path: forward trigger events (fire-and-forget)
                                     if let Some(forwarder) = &self.trigger_forwarder {
                                         let event = Arc::new(enriched.clone());
                                         let forwarder = forwarder.clone();
                                         tokio::spawn(async move { forwarder.maybe_forward(event).await; });
                                     }
-                                    self.metrics.processing_latency(t0.elapsed().as_millis() as f64);
                                     self.metrics.events_processed("success");
                                     record_progress("processed");
                                 }
