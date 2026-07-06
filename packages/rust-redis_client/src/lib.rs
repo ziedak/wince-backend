@@ -516,6 +516,28 @@ impl RedisClient {
 		Ok(())
 	}
 
+	/// Execute a Lua script atomically via EVALSHA (falls back to EVAL on NOSCRIPT).
+	/// `keys` maps to Lua KEYS[1..n] and `args` maps to ARGV[1..m].
+	pub async fn invoke_script(
+		&self,
+		script: &redis::Script,
+		keys: &[String],
+		args: &[String],
+	) -> Result<redis::Value> {
+		let mut con = self.connection_handle()?;
+		let mut inv = script.prepare_invoke();
+		for k in keys {
+			inv.key(k.as_str());
+		}
+		for a in args {
+			inv.arg(a.as_str());
+		}
+		inv.invoke_async(&mut con).await.map_err(|e| {
+			self.mark_disconnected();
+			e.into()
+		})
+	}
+
 	fn connection_handle(&self) -> Result<ConnectionManager> {
 		self.connection
 			.lock()

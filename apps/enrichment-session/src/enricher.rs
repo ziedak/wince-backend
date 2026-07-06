@@ -32,8 +32,10 @@ impl Enricher {
             Ok(WindowResult::Duplicate) => return EnrichResult::Duplicate,
             Ok(WindowResult::Features(fv)) => fv,
             Err(e) => {
-                // On Redis outage, treat as duplicate to prevent double-processing.
-                tracing::warn!(error = %e, event_id = %raw.event_id, "window update failed (Redis)");
+                // On Redis outage, drop the event to prevent double-processing on retry.
+                // This is deliberate at-most-once behaviour during degradation.
+                tracing::error!(error = %e, event_id = %raw.event_id, "window update failed — event dropped (Redis unavailable)");
+                self.metrics.events_processed("redis_degraded");
                 return EnrichResult::Duplicate;
             }
         };

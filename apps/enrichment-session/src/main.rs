@@ -20,8 +20,8 @@ use enricher::Enricher;
 use health::HealthServer;
 use window::WindowService;
 use metrics::EnrichmentMetrics;
-use redis::Client as RedisClient;
 use rust_postgre_client::{MetricsHandle, PostgresClient, PostgresConfig};
+use rust_redis_client::RedisClient;
 use session::SessionService;
 use customer::CustomerService;
 use trigger_forwarder::TriggerForwarder;
@@ -44,10 +44,14 @@ async fn main() {
 
     let prometheus_handle = metrics::setup_metrics_recorder();
 
-    let redis = Arc::new(RedisClient::open(config.redis_url.as_str()).unwrap_or_else(|e| {
-        error!("Invalid Redis URL: {e}");
-        std::process::exit(1);
-    }));
+    let redis = Arc::new(
+        RedisClient::from_url(config.redis_url.as_str())
+            .await
+            .unwrap_or_else(|e| {
+                error!("Redis connection failed: {e}");
+                std::process::exit(1);
+            }),
+    );
 
     let metrics = Arc::new(EnrichmentMetrics::new());
 

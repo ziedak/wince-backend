@@ -6,6 +6,7 @@ use thiserror::Error;
 use redis::Value as RedisValue;
 use crate::metrics::EnrichmentMetrics;
 use rust_shared_types::{FeatureVector, RawEvent};
+use rust_redis_client::RedisClient;
 
 pub const FEATURE_SCHEMA_VERSION: &str = "v1";
 
@@ -126,7 +127,7 @@ pub enum WindowResult {
 }
 
 pub struct WindowService {
-    redis: Arc<redis::Client>,
+    redis: Arc<RedisClient>,
     window_ttl: u64,
     session_ttl: u64,
     idem_ttl: u64,
@@ -137,7 +138,7 @@ pub struct WindowService {
 
 impl WindowService {
     pub fn new(
-        redis: Arc<redis::Client>,
+        redis: Arc<RedisClient>,
         window_ttl: u64,
         session_ttl: u64,
         idem_ttl: u64,
@@ -179,34 +180,24 @@ impl WindowService {
             format!("session:types:{sid}"),     // KEYS[7] HyperLogLog unique event types
         ];
 
-        let t0 = Instant::now();
-        let mut con = self
-            .redis
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| WindowError::Redis(e.to_string()))?;
-
         // 10 ARGVs: eid, now_ms, etype, now_s, win_ttl, sess_ttl, idem_ttl, alpha, scroll_v, cart_v
-        let raw_result: RedisValue = self
-            .script
-            .key(&keys[0])
-            .key(&keys[1])
-            .key(&keys[2])
-            .key(&keys[3])
-            .key(&keys[4])
-            .key(&keys[5])
-            .key(&keys[6])
-            .arg(eid)
-            .arg(now_ms.to_string())
-            .arg(&raw.event_type)
-            .arg(now_s.to_string())
-            .arg(self.window_ttl.to_string())
-            .arg(self.session_ttl.to_string())
-            .arg(self.idem_ttl.to_string())
-            .arg(format!("{:.4}", self.ewma_alpha))
-            .arg(format!("{:.4}", scroll_velocity))
-            .arg(format!("{:.4}", cart_value))
-            .invoke_async(&mut con)
+        let args: Vec<String> = vec![
+            eid.clone(),
+            now_ms.to_string(),
+            raw.event_type.clone(),
+            now_s.to_string(),
+            self.window_ttl.to_string(),
+            self.session_ttl.to_string(),
+            self.idem_ttl.to_string(),
+            format!("{:.4}", self.ewma_alpha),
+            format!("{:.4}", scroll_velocity),
+            format!("{:.4}", cart_value),
+        ];
+
+        let t0 = Instant::now();
+        let raw_result = self
+            .redis
+            .invoke_script(&self.script, &keys, &args)
             .await
             .map_err(|e| WindowError::Redis(e.to_string()))?;
 
@@ -218,7 +209,6 @@ impl WindowService {
             RedisValue::Bulk(v) => v,
             _ => return Err(WindowError::Redis("unexpected Lua response shape".into())),
         };
-
         Ok(parse_result(values, &raw.event_type, now_ms))
     }
 }

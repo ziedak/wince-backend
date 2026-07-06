@@ -6,12 +6,13 @@ use tracing::info;
 
 use crate::consumer::SharedConsumerState;
 use rust_postgre_client::PostgresClient;
+use rust_redis_client::RedisClient;
 
 #[derive(Clone)]
 struct HealthState {
     prometheus_handle: PrometheusHandle,
     consumer_state: SharedConsumerState,
-    redis: Arc<redis::Client>,
+    redis: Arc<RedisClient>,
     db: Arc<PostgresClient>,
 }
 
@@ -25,7 +26,7 @@ impl HealthServer {
         prometheus_handle: PrometheusHandle,
         port: u16,
         consumer_state: SharedConsumerState,
-        redis: Arc<redis::Client>,
+        redis: Arc<RedisClient>,
         db: Arc<PostgresClient>,
     ) -> Self {
         Self {
@@ -62,15 +63,7 @@ async fn ready_handler(State(s): State<HealthState>) -> (StatusCode, &'static st
     }
 
     // Verify Redis connectivity
-    let redis_ok: bool = async {
-        let mut con = s.redis.get_multiplexed_async_connection().await?;
-        redis::cmd("PING")
-            .query_async::<_, String>(&mut con)
-            .await
-            .map(|_| ())
-    }
-    .await
-    .is_ok();
+    let redis_ok = s.redis.is_healthy().await;
 
     // Verify DB connectivity (uses pooled connection, very cheap)
     let db_ok = s.db.health_check().await.is_ok();
