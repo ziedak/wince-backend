@@ -49,7 +49,7 @@ impl Enricher {
         // ── 3. Build enriched event ───────────────────────────────────────────────
         // Keep legacy fields for backward compatibility with TS consumers.
         let rage_click_count = fv.rage_clicks_30s as i32;
-        let is_frustrated    = fv.rage_after_add || fv.rage_clicks_30s >= 3;
+        let is_frustrated    = fv.pattern_rage_after_add || fv.rage_clicks_30s >= 3;
 
         let enriched = EnrichedEvent {
             event_id:       raw.event_id.clone(),
