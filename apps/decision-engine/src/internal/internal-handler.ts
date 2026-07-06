@@ -37,6 +37,9 @@ export class InternalHandler {
         void this.handleRecalculate(body, res);
       } else if (path === '/v1/internal/intervention/manual') {
         void this.handleManual(body, res);
+      } else if (req.method === 'POST' && path.startsWith('/internal/execute/')) {
+        const recommendationId = path.slice('/internal/execute/'.length);
+        void this.handleExecute(recommendationId, res);
       } else {
         res.writeHead(404).end('not found');
       }
@@ -161,5 +164,22 @@ export class InternalHandler {
     res
       .writeHead(statusCode, { 'Content-Type': 'application/json' })
       .end(JSON.stringify(result));
+  }
+
+  private async handleExecute(recommendationId: string, res: http.ServerResponse): Promise<void> {
+    if (!recommendationId || recommendationId.length < 10) {
+      res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'invalid_recommendation_id' }));
+      return;
+    }
+    try {
+      const result = await this.orchestrator.executeRecommendation(recommendationId);
+      const statusCode = result.status === 'executed' ? 200 : 202;
+      res
+        .writeHead(statusCode, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(result));
+    } catch (err) {
+      this.logger.error({ err, recommendationId }, 'handleExecute: unexpected error');
+      res.writeHead(500, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'internal_error' }));
+    }
   }
 }

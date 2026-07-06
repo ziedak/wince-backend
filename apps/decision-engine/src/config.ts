@@ -14,8 +14,12 @@ export interface Config {
   gatewayUrl: string;
   /** Base URL for notification-service (Docker network direct — bypasses Kong) */
   notificationUrl: string;
-  /** Absolute path to ONNX model file; omit to skip inference and use rules only */
+  /** Absolute path to ONNX risk-scoring model; omit to return stub confidence and use rules only */
   modelPath: string | undefined;
+  /** Absolute path to ONNX prediction model (future abandonment probability); omit for stub */
+  predictionModelPath: string | undefined;
+  /** Kafka topic for intervention recommendation events (audit + async fan-out) */
+  kafkaTopicRecommendations: string;
   logLevel: string;
 }
 
@@ -38,6 +42,8 @@ export function loadConfig(): Config {
     gatewayUrl: optional('GATEWAY_URL', 'http://intervention-gateway:3005'),
     notificationUrl: optional('NOTIFICATION_URL', 'http://notification-service:3006'),
     modelPath: process.env['MODEL_PATH'],
+    predictionModelPath: process.env['PREDICTION_MODEL_PATH'],
+    kafkaTopicRecommendations: optional('KAFKA_TOPIC_RECOMMENDATIONS', 'intervention.recommendations'),
     logLevel: optional('LOG_LEVEL', 'info'),
   };
 }

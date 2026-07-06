@@ -63,6 +63,54 @@ export interface RawKafkaEvent extends TrackEvent {
   ip: string;
 }
 
+/**
+ * Real-time feature vector computed by the Rust enrichment-session service.
+ * Attached to every EnrichedEvent as a pre-computed window of session signals.
+ * Optional fields are null when the underlying data is unavailable (e.g. no
+ * cart line-items in the event payload). XGBoost treats null as a native
+ * missing value — do NOT substitute zeros.
+ */
+export interface FeatureVector {
+  // ── Rolling aggregates (ZCOUNT on per-type sorted sets) ─────────────────
+  rage_clicks_30s: number;
+  add_to_cart_60s: number;
+  exit_intent_5m: number;
+  // ── Recency (null = no prior event in this session) ──────────────────────
+  seconds_since_last_event: number | null;
+  seconds_since_last_add: number | null;
+  seconds_since_last_checkout: number | null;
+  // ── EWMA velocity ──────────────────────────────────────────────────────
+  ewma_events_per_minute: number;
+  ewma_scroll_velocity: number;
+  /** Raw 30-second scroll velocity reported by the frontend on this event. */
+  scroll_velocity_30s: number;
+  // ── Pattern detection (Rust-side boolean logic) ──────────────────────────
+  pattern_rage_after_add: boolean;
+  pattern_exit_after_checkout: boolean;
+  idle_after_high_cart: boolean;
+  // ── Cart dynamics ─────────────────────────────────────────────────────────
+  cart_value_delta_2m: number;
+  // ── Funnel progress ───────────────────────────────────────────────────────
+  checkout_progress_max: number | null;
+  checkout_step_reached: number | null;
+  // ── Session duration ──────────────────────────────────────────────────────
+  time_on_site_total: number;
+  // ── Behavioural entropy ───────────────────────────────────────────────────
+  unique_event_types: number;
+  // ── Intervention history ──────────────────────────────────────────────────
+  interventions_shown_this_session: number;
+  seconds_since_last_intervention: number | null;
+  // ── Cart composition (null until cart-items schema added to ingestion) ────
+  cart_item_count: number | null;
+  cart_avg_item_price: number | null;
+  cart_has_discount: boolean | null;
+  cart_distinct_categories: number | null;
+  // ── Funnel context (null until page-id schema added to ingestion) ─────────
+  unique_pages_visited: number | null;
+  // ── Schema versioning ─────────────────────────────────────────────────────
+  feature_schema_version: string;
+}
+
 /** A RawKafkaEvent after enrichment — written to enriched.events */
 export interface EnrichedEvent extends RawKafkaEvent {
   /** Resolved customer DB id (null for anonymous) */
@@ -83,6 +131,9 @@ export interface EnrichedEvent extends RawKafkaEvent {
   sms_consent: boolean;
   /** True when an active session record was found during enrichment */
   session_available: boolean;
+  /** Pre-computed feature vector from the Enrichment Service. Present on
+   * session-bearing events; absent on bare page-view / identify events. */
+  features?: FeatureVector;
 }
 
 // ─── Intervention types ──────────────────────────────────────────────────────

@@ -29,6 +29,8 @@ import {
   OutboundService,
   DecisionOrchestrator,
   StaleScannerService,
+  PredictionService,
+  RecommendationService,
 } from './services'
 import { SchedulerService } from './services/scheduler.service'
 import { TriggerHandler } from './trigger/trigger.handler'
@@ -113,6 +115,16 @@ async function main(): Promise<void> {
     metrics
   )
 
+  // ── Prediction + Recommendation services ─────────────────────────────────
+  const prediction = new PredictionService(runtime, config.predictionModelPath, metrics)
+  const recommendation = new RecommendationService(
+    db,
+    redisClient,
+    producer,
+    config.kafkaTopicRecommendations,
+    metrics
+  )
+
   // ── Orchestrator + fast-path ─────────────────────────────────────────────
   const orchestrator = new DecisionOrchestrator(
     policy,
@@ -126,7 +138,10 @@ async function main(): Promise<void> {
     writer,
     metrics,
     lock,
-    scheduler
+    scheduler,
+    prediction,
+    recommendation,
+    sessionFeatures
   )
 
   const triggerHandler = new TriggerHandler(
@@ -169,7 +184,8 @@ async function main(): Promise<void> {
     sessionFeatures,
     orchestrator,
     lock,
-    features
+    features,
+    db
   )
 
   healthServer.start()

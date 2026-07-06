@@ -17,6 +17,7 @@ import { createAnalyticsRouter } from './routes/analytics';
 import { createRiskRouter } from './routes/risk';
 import { createInterventionRouter } from './routes/intervention';
 import { createDiscountRouter } from './routes/discount';
+import { RecommendationReadService } from './services/recommendation';
 
 const logger = createLogger({ service: 'admin-api' });
 
@@ -46,6 +47,7 @@ const kong = new KongClient(config);
 
 // Services
 const audit = new AuditService(db);
+const recommendations = new RecommendationReadService(db);
 
 // App
 const app = new Hono();
@@ -61,7 +63,7 @@ app.route('/', createPoliciesRouter(db, audit));
 app.route('/', createExperimentsRouter(db, ch, audit));
 app.route('/', createAnalyticsRouter(ch));
 app.route('/', createRiskRouter(redis, de));
-app.route('/', createInterventionRouter(de, audit));
+app.route('/', createInterventionRouter(de, audit, recommendations));
 app.route('/', createDiscountRouter(db, redis));
 
 // 404 fallback

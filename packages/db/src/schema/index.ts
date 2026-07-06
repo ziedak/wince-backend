@@ -15,3 +15,4 @@ export * from './store_domains.js';
 export * from './admin_user_stores.js';
 export * from './intervention_events.js';
 export * from './notification_logs.js';
+export * from './intervention_recommendations.js';

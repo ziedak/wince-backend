@@ -11,6 +11,12 @@ export interface Policy {
   enableInShop: boolean;
   enableEmail: boolean;
   enableSms: boolean;
+  /** Whether interventions require admin approval before execution. */
+  approvalMode: 'manual' | 'auto_if_budget' | 'auto_always';
+  /** Seconds before a pending recommendation expires with no action taken. */
+  approvalTimeoutSeconds: number;
+  /** Scope of the budget counter (per_day resets at midnight UTC). */
+  budgetMode: 'per_day' | 'per_campaign' | 'unlimited';
 }
 
 const DEFAULT_POLICY: Policy = {
@@ -22,6 +28,9 @@ const DEFAULT_POLICY: Policy = {
   enableInShop: true,
   enableEmail: false,
   enableSms: false,
+  approvalMode: 'manual',
+  approvalTimeoutSeconds: 600,
+  budgetMode: 'per_day',
 };
 
 const CACHE_TTL_SECONDS = 300; // 5 minutes

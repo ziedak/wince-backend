@@ -82,7 +82,7 @@ export class RiskScorerService {
       // ── 2. Compute triggering session score (rules + ONNX in parallel) ──
       const [ruleResult, inferenceResult] = await Promise.all([
         Promise.resolve(this.rules.evaluate(event, features, policy)),
-        this.inference.predict(features),
+        this.inference.predict(event.features, features),
       ])
 
       // Rules gate: cart too low, no consent channel, etc.
@@ -91,28 +91,25 @@ export class RiskScorerService {
       }
 
       // ── 3. Determine routing: ONNX overrides rules when confidence > 0.6 ─
-      // Per v2 spec §4.1 step 6 — this fixes the previous implementation where
-      // rules were permanently authoritative regardless of ONNX confidence.
       const onnxDriven =
-        inferenceResult !== null &&
         inferenceResult.confidence > RISK_THRESHOLD &&
         inferenceResult.type !== undefined &&
         inferenceResult.channel !== undefined
 
       const triggerScore =
-        inferenceResult !== null && inferenceResult.confidence > RISK_THRESHOLD
+        inferenceResult.confidence > RISK_THRESHOLD
           ? inferenceResult.confidence
           : ruleResult.confidence
 
       const resolvedType: InterventionType = onnxDriven
-        ? inferenceResult!.type!
+        ? inferenceResult.type!
         : ruleResult.type
       const resolvedChannel: InterventionChannel = onnxDriven
-        ? inferenceResult!.channel!
+        ? inferenceResult.channel!
         : ruleResult.channel
       const resolvedValue: number =
-        onnxDriven && inferenceResult!.value !== undefined
-          ? inferenceResult!.value
+        onnxDriven && inferenceResult.value !== undefined
+          ? inferenceResult.value
           : ruleResult.value
 
       // ── 4. Multi-session weighted aggregate ────────────────────────────

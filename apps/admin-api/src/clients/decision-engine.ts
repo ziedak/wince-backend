@@ -39,4 +39,12 @@ export class DecisionEngineClient {
     const res = await this.http.post<ManualInterventionResponse>('/v1/internal/intervention/manual', body);
     return res.data;
   }
+
+  async executeRecommendation(recommendationId: string): Promise<{ status: 'executed' | 'skipped'; interventionId?: string; reason?: string }> {
+    const res = await this.http.post<{ status: 'executed' | 'skipped'; interventionId?: string; reason?: string }>(
+      `/internal/execute/${encodeURIComponent(recommendationId)}`,
+      {},
+    );
+    return res.data;
+  }
 }

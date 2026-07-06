@@ -15,6 +15,13 @@
       "when": 1751500000000,
       "tag": "0001_add_token_version",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1751900000000,
+      "tag": "0002_intervention_recommendations",
+      "breakpoints": true
     }
   ]
 }

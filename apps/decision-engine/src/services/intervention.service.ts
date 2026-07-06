@@ -19,9 +19,11 @@ import { FeatureService } from './features.service';
 import { LockService } from './lock.service';
 import { OutboundService } from './outbound.service';
 import { PolicyService } from './policy.service';
+import { PredictionService } from './prediction.service';
+import { RecommendationService } from './recommendation.service';
 import { RiskScorerService } from './risk-scorer.service';
 import { SchedulerService } from './scheduler.service';
-
+import { SessionFeaturesService } from './session-features.service';
 
 /** In-shop types that carry a monetary offer → need a generated discount code. */
 const NEEDS_DISCOUNT_CODE = new Set<string>(['price_reduction', 'free_shipping']);
@@ -29,13 +31,10 @@ const NEEDS_DISCOUNT_CODE = new Set<string>(['price_reduction', 'free_shipping']
 /**
  * Deterministic UUID-like ID derived from SHA-256 of `{eid}|{distinctId}`.
  * Version nibble set to 5 for observability tooling compatibility.
- * Provides Kafka-level idempotency: re-processing the same event produces the
- * same interventionId and will fail the DB unique constraint rather than
- * inserting a duplicate row.
+ * Provides idempotency: re-processing the same source produces the same interventionId.
  */
 function deterministicInterventionId(eid: string, distinctId: string): string {
   const hash = createHash('sha256').update(`${eid}|${distinctId}`).digest('hex');
-  // RFC 4122 variant nibble must be 8, 9, a, or b (top 2 bits = 10).
   const variantNibble = (['8', '9', 'a', 'b'] as const)[parseInt(hash[16]!, 16) & 3]!;
   return [
     hash.slice(0, 8),
@@ -49,16 +48,22 @@ function deterministicInterventionId(eid: string, distinctId: string): string {
 /**
  * Orchestrates the two-phase decision pipeline for a single enriched event.
  *
- * Phase 1 — Risk Scoring:
+ * Phase 1 — Scoring + Recommendation:
  *   policy → cooldown gate → features
  *   → RiskScorerService.score() (rules + ONNX in parallel)
- *   → write risk:{sid} → threshold check
- *   → score < 0.6: schedule re-evaluation and return
+ *   → PredictionService.predict() (future abandonment)
+ *   → threshold check (risk OR prediction > 0.6)
+ *   → write recommendation to DB + Redis + Kafka
+ *   → route based on approvalMode:
+ *       auto_always      → executeRecommendation() immediately
+ *       auto_if_budget   → peek budget; if ok → executeRecommendation(); else pending
+ *       manual           → stop; admin approves via Admin API
  *
- * Phase 2 — Intervention Pipeline:
- *   isSent guard → session lock → cart lock → budget gate
- *   → experiment → discount → write(delivered=false)
- *   → outbound → markDelivered → setCooldown → markSent → metrics
+ * Phase 2 — Execution (via executeRecommendation):
+ *   read recommendation → validate pending + not expired
+ *   → isSent guard → lock + heartbeat → budget reserve → experiment → discount
+ *   → write(delivered=false) → outbound → markDelivered → cooldown → markSent
+ *   → markExecuted(recommendationId) → metrics
  *
  * Never throws — all errors are caught and logged.
  */
@@ -78,6 +83,9 @@ export class DecisionOrchestrator {
     private readonly metrics: DecisionMetrics,
     private readonly lock: LockService,
     private readonly scheduler: SchedulerService,
+    private readonly prediction: PredictionService,
+    private readonly recommendation: RecommendationService,
+    private readonly sessionFeatures: SessionFeaturesService,
   ) {}
 
   async decide(event: EnrichedEvent): Promise<void> {
@@ -87,136 +95,203 @@ export class DecisionOrchestrator {
     const sessionId = event.sid;
     const customerId = event.customer_id;
 
-    // customer_id is required for identity-aware routing (cooldown, experiment bucketing).
-    // If enrichment failed to resolve a customer (null), skip — the scheduler or stale
-    // scanner will retry once the session hash is fully populated.
     if (customerId === null) {
       this.logger.debug({ storeId, distinctId }, 'Skipping decision: customer_id not resolved');
       return;
     }
 
-    // Declared outside try so it is accessible in the catch block for cleanup.
+    try {
+      // ── Phase 1: Risk Scoring ──────────────────────────────────────────────
+
+      const pol = await this.policy.getPolicy(storeId);
+
+      const onCooldown = await this.cooldown.isOnCooldown(storeId, customerId);
+      if (onCooldown) {
+        this.metrics.cooldownHit();
+        return;
+      }
+
+      const feats = await this.features.getFeatures(storeId, distinctId);
+
+      // Risk scoring and future prediction run in parallel.
+      const [riskScore, predResult] = await Promise.all([
+        this.riskScorer.score(event, feats, pol, customerId),
+        this.prediction.predict(event.features, feats),
+      ]);
+
+      if (!riskScore) return; // Rules gate: cart too low, no valid channel, etc.
+
+      // Threshold: current risk OR future prediction must exceed 0.6 to proceed.
+      const PREDICTION_THRESHOLD = 0.6;
+      const meetsThreshold =
+        riskScore.shouldIntervene ||
+        predResult.predictionProbability > PREDICTION_THRESHOLD;
+
+      if (!meetsThreshold) {
+        await this.scheduler.schedule(sessionId, riskScore.score);
+        this.logger.debug(
+          { sessionId, riskScore: riskScore.score, predProb: predResult.predictionProbability },
+          'Below threshold — scheduled re-evaluation',
+        );
+        return;
+      }
+
+      // ── Generate recommendation ────────────────────────────────────────────
+
+      const recId = await this.recommendation.generate({
+        storeId,
+        sessionId,
+        distinctId,
+        customerId,
+        riskScore: riskScore.score,
+        predictionProbability: predResult.predictionProbability,
+        predictionConfidence: predResult.predictionConfidence,
+        type: riskScore.type,
+        channel: riskScore.channel,
+        value: riskScore.value,
+        triggerReason: event.t,
+        featureSchemaVersion: event.features?.feature_schema_version,
+        approvalTimeoutSeconds: pol?.approvalTimeoutSeconds ?? 600,
+      });
+
+      this.metrics.decisionLatency(Date.now() - t0);
+
+      // ── Route based on approval mode ───────────────────────────────────────
+
+      const approvalMode = pol?.approvalMode ?? 'manual';
+
+      if (approvalMode === 'auto_always') {
+        await this.executeRecommendation(recId);
+      } else if (approvalMode === 'auto_if_budget') {
+        const budgetOk = await this.budget.checkAvailable(
+          storeId,
+          riskScore.value,
+          pol?.maxDailyBudgetAmount ?? 100,
+        );
+        if (budgetOk) {
+          await this.executeRecommendation(recId);
+        } else {
+          this.logger.info({ recId, storeId }, 'auto_if_budget: budget peeked as insufficient — queued for approval');
+        }
+      } else {
+        // manual: leave pending for admin
+        this.logger.info(
+          { recId, storeId, sessionId, riskScore: riskScore.score },
+          'Recommendation pending admin approval',
+        );
+      }
+    } catch (err) {
+      this.logger.error({ err, storeId, sessionId, customerId }, 'DecisionOrchestrator.decide: unexpected error');
+    }
+  }
+
+  /**
+   * Executes an approved (or auto-approved) recommendation through Phase 2.
+   *
+   * Called from:
+   *   - decide()     when approvalMode is auto_always or auto_if_budget (budget ok)
+   *   - InternalHandler POST /internal/execute/:id  when admin approves via Admin API
+   *
+   * Returns the execution result so callers can surface it in HTTP responses.
+   */
+  async executeRecommendation(
+    recommendationId: string,
+  ): Promise<{ status: 'executed' | 'skipped'; interventionId?: string; reason?: string }> {
+    const t0 = Date.now();
+
     let lockHeartbeat: NodeJS.Timeout | undefined;
     let lockToken: string | null = null;
 
     try {
-      // ── Phase 1: Risk Scoring ──────────────────────────────────────────────
+      // Read and validate the recommendation
+      const rec = await this.recommendation.get(recommendationId);
+      if (!rec) {
+        return { status: 'skipped', reason: 'recommendation_not_found' };
+      }
+      if (rec.status !== 'pending' && rec.status !== 'approved') {
+        return { status: 'skipped', reason: `recommendation_status_${rec.status}` };
+      }
+      if (new Date() > rec.expiresAt) {
+        await this.recommendation.markExpired(recommendationId, rec.storeId);
+        return { status: 'skipped', reason: 'recommendation_expired' };
+      }
 
-      // 1. Policy
+      const { storeId, sessionId, distinctId, customerId, type, channel } = rec;
+      const value = parseFloat(rec.value ?? '0');
+
+      if (customerId === null) {
+        return { status: 'skipped', reason: 'customer_not_resolved' };
+      }
+
+      // Read live session context for consent flags (may have changed since recommendation)
+      const ctx = await this.sessionFeatures.getSessionContext(sessionId);
+
       const pol = await this.policy.getPolicy(storeId);
 
-      // 2. Cooldown gate — fast Redis check before running inference
-      const onCooldown = await this.cooldown.isOnCooldown(storeId, customerId);
-      if (onCooldown) {
-        this.metrics.cooldownHit();
-        this.logger.debug({ storeId, customerId }, 'Cooldown active — skipping');
-        return;
-      }
-
-      // 3. Features (needed by both rule engine and ONNX model)
-      const feats = await this.features.getFeatures(storeId, distinctId);
-
-      // 4. Risk scoring — rules engine + ONNX inference in parallel
-      const riskScore = await this.riskScorer.score(event, feats, pol, customerId);
-      if (!riskScore) {
-        // Rules gate: cart too low, no valid delivery channel, etc.
-        return;
-      }
-
-      // 5. Threshold gate — schedule re-evaluation if below threshold
-      if (!riskScore.shouldIntervene) {
-        await this.scheduler.schedule(sessionId, riskScore.score);
-        this.logger.debug(
-          { sessionId, score: riskScore.score },
-          'Risk below threshold — scheduled re-evaluation',
-        );
-        return;
-      }
-
-      // ── Phase 2: Intervention Pipeline ────────────────────────────────────
-
-      // 6. isSent guard — user-scoped, cheap check before acquiring the lock
+      // isSent guard
       if (await this.lock.isSent(customerId)) {
-        this.logger.debug({ sessionId, customerId }, 'Intervention already sent in this window — skipping');
-        return;
+        return { status: 'skipped', reason: 'already_sent' };
       }
 
-      // 7. User-level lock — prevents concurrent Phase 2 execution across all entry
-      // points (Kafka, trigger, scheduler, stale scanner, admin manual) for the same user.
-      // Returns a fencing token to guard against stale holders.
+      // User-level lock
       lockToken = await this.lock.acquireUserLock(customerId);
       if (!lockToken) {
-        this.logger.debug({ sessionId, customerId }, 'User lock contention — another decision in flight');
-        return;
+        return { status: 'skipped', reason: 'lock_contention' };
       }
 
-      // Renew the lock every 5 s to prevent TTL expiry. The fencing token check
-      // in renewUserLock() detects if the lock was taken by a new holder.
       lockHeartbeat = setInterval(() => {
         if (!lockToken) return;
         void this.lock.renewUserLock(customerId, lockToken).then((stillValid) => {
           if (!stillValid) {
-            this.logger.warn({ customerId, sessionId }, 'DecisionOrchestrator: lock lost during pipeline — fencing detected');
+            this.logger.warn({ customerId, sessionId }, 'executeRecommendation: lock lost — fencing detected');
           }
         }).catch(() => {});
       }, 5_000);
 
-      // 8. Budget gate — reserved only once we know an intervention will be sent
-      const discountValue = pol?.discountValue ?? 10;
-      const maxBudget = pol?.maxDailyBudgetAmount ?? 100;
-      const budgetOk = await this.budget.checkAndReserve(storeId, discountValue, maxBudget);
+      // Budget reserve
+      const budgetOk = await this.budget.checkAndReserve(storeId, value, pol?.maxDailyBudgetAmount ?? 100);
       if (!budgetOk) {
         clearInterval(lockHeartbeat);
         await this.lock.releaseUserLock(customerId, lockToken);
         this.metrics.budgetExhausted();
-        this.logger.info({ storeId }, 'Budget exhausted — skipping');
-        return;
+        return { status: 'skipped', reason: 'budget_exhausted' };
       }
 
-      const channel: InterventionChannel = riskScore.channel;
-
-      // 11. Experiment assignment
+      // Experiment assignment
       const variant = await this.experiment.getVariant(storeId, customerId);
 
-      // 12. Discount code (only for monetary in-shop offers)
-      const intId = deterministicInterventionId(event.eid, distinctId);
+      // Discount code generation
+      const intId = deterministicInterventionId(recommendationId, distinctId);
       let discountCode: string | null = null;
-      if (NEEDS_DISCOUNT_CODE.has(riskScore.type) && channel === 'in_shop') {
-        discountCode = await this.discount.generateCode(
-          storeId,
-          sessionId,
-          riskScore.value,
-          intId,
-        );
+      if (NEEDS_DISCOUNT_CODE.has(type) && channel === 'in_shop') {
+        discountCode = await this.discount.generateCode(storeId, sessionId, value, intId);
       }
 
-      // 13. Write record (delivered=false) — fire-and-forget so outbound delivery is not
-      // blocked by the DB insert. Audit integrity is preserved via the Kafka DLQ in writer.
+      // Write intervention record (fire-and-forget before outbound)
       void this.writer.write({
         interventionId: intId,
         sessionId,
         storeId,
         customerId,
         distinctId,
-        type: riskScore.type,
-        channel,
-        value: riskScore.value,
+        type: type as InterventionType,
+        channel: channel as InterventionChannel,
+        value,
         discountCode: discountCode ?? undefined,
         variant,
-        triggerReason: event.t,
+        triggerReason: rec.triggerReason ?? undefined,
         decisionLatencyMs: Date.now() - t0,
-        confidenceScore: riskScore.score,
-        ...(riskScore.isFallback ? { source: 'fallback' } : {}),
+        confidenceScore: parseFloat(rec.riskScore),
       }).catch((err: unknown) => {
-        this.logger.error({ err, interventionId: intId }, 'DecisionOrchestrator: writer.write fire-and-forget error');
+        this.logger.error({ err, interventionId: intId }, 'executeRecommendation: writer.write error');
       });
 
-      // 14. Outbound delivery
+      // Outbound delivery
       if (channel === 'in_shop') {
         const payload: InShopPayload = {
           interventionId: intId,
-          type: riskScore.type as InShopInterventionType,
-          value: riskScore.value,
+          type: type as InShopInterventionType,
+          value,
           discountCode: discountCode ?? undefined,
         };
         await this.outbound.route('in_shop', sessionId, payload);
@@ -226,58 +301,45 @@ export class DecisionOrchestrator {
           sessionId,
           storeId,
           distinctId,
-          type: riskScore.type as OffShopInterventionType,
-          templateId: `${riskScore.type}_default`,
-          email: event.email,
-          emailConsent: event.email_consent,
-          smsConsent: event.sms_consent,
+          type: type as OffShopInterventionType,
+          templateId: `${type}_default`,
+          email: ctx?.email,
+          emailConsent: ctx?.emailConsent ?? false,
+          smsConsent: ctx?.smsConsent ?? false,
           templateData: {
             discountCode: discountCode ?? undefined,
-            cartValue: event.cart_value,
+            cartValue: ctx?.cartValue,
           },
         };
         await this.outbound.route('off_shop', sessionId, payload);
       }
 
-      // 15. Mark delivered
-      await this.writer.markDelivered(intId, channel);
-
-      // 16. Set cooldown AFTER delivery confirmed
+      await this.writer.markDelivered(intId, channel as InterventionChannel);
       await this.cooldown.setCooldown(storeId, customerId, pol?.cooldownSeconds ?? 3600);
-
-      // 17. Persist sent-marker (user-scoped, 10 min) — prevents re-send from any entry point
       await this.lock.markSent(customerId);
+      await this.recommendation.markExecuted(recommendationId, intId);
 
-      // 18. Release the user lock
       clearInterval(lockHeartbeat);
       await this.lock.releaseUserLock(customerId, lockToken);
 
-      // 19. Metrics
-      this.metrics.interventionTotal(riskScore.type, channel, variant);
-      this.metrics.decisionLatency(Date.now() - t0);
+      this.metrics.interventionTotal(type as InterventionType, channel as InterventionChannel, variant);
 
       this.logger.info(
-        {
-          interventionId: intId,
-          type: riskScore.type,
-          channel,
-          variant,
-          storeId,
-          sessionId,
-          customerId,
-          score: riskScore.score,
-          onnxDriven: !riskScore.isFallback,
-          latencyMs: Date.now() - t0,
-        },
-        'Intervention dispatched',
+        { interventionId: intId, recommendationId, type, channel, storeId, sessionId, customerId, latencyMs: Date.now() - t0 },
+        'Recommendation executed — intervention dispatched',
       );
+
+      return { status: 'executed', interventionId: intId };
     } catch (err) {
       clearInterval(lockHeartbeat);
-      // Release lock on unexpected error — don't leave it held until TTL
-      try { await this.lock.releaseUserLock(customerId, lockToken ?? ''); } catch { /* ignore */ }
-      this.logger.error({ err, storeId, sessionId, customerId }, 'DecisionOrchestrator: unexpected error (non-fatal)');
+      if (lockToken) {
+        try { await this.lock.releaseUserLock(-1, lockToken); } catch { /* ignore */ }
+      }
+      this.logger.error({ err, recommendationId }, 'executeRecommendation: unexpected error');
+      return { status: 'skipped', reason: String(err) };
     }
   }
+
 
   /**
    * Bypasses Phase 1 (risk scoring) and directly executes Phase 2 (intervention pipeline)

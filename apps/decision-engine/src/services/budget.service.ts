@@ -32,6 +32,30 @@ export class BudgetService {
   ) {}
 
   /**
+   * Checks whether `amount` can be reserved within `maxAmount` WITHOUT
+   * incrementing the counter. Used by `auto_if_budget` approval mode to
+   * peek at availability before committing to execution.
+   * Fails open (returns true) on Redis error.
+   */
+  async checkAvailable(
+    storeId: number,
+    amount: number,
+    maxAmount: number
+  ): Promise<boolean> {
+    if (amount <= 0) return true
+    const date = new Date().toISOString().slice(0, 10)
+    const key = `budget:${storeId}:${date}`
+    try {
+      const raw = await this.redisClient.getRedis().get(key)
+      const current = raw ? parseFloat(raw) : 0
+      return current + amount <= maxAmount
+    } catch (err) {
+      this.logger.warn({ err, storeId, amount }, 'BudgetService.checkAvailable: Redis error, failing open')
+      return true
+    }
+  }
+
+  /**
    * Atomically checks remaining daily budget and reserves `amount` if available.
    * Returns true when the amount was reserved, false when exhausted.
    * Fails open (returns true) on Redis error to avoid blocking legitimate interventions.
