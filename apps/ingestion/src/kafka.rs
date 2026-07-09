@@ -147,6 +147,9 @@ fn build_kafka_headers(h: &SinkHeaders) -> OwnedHeaders {
     if let Some(ref reason) = h.dlq_reason {
         hdrs = hdrs.insert(Header { key: "dlq_reason", value: Some(reason.as_str()) });
     }
+    if let Some(ref priority) = h.priority {
+        hdrs = hdrs.insert(Header { key: "priority", value: Some(priority.as_str()) });
+    }
 
     hdrs
 }

@@ -29,14 +29,14 @@ TO customer_features_agg
 AS
 SELECT
     store_id,
-    distinct_id,
+    anon                                                            AS distinct_id,
     toDate(timestamp)                                               AS window_date,
     1                                                               AS sessions_total,
-    if(event_type = 'checkout_abandon', 1, 0)                      AS sessions_abandoned,
+    if(t = 'checkout_abandon', 1, 0)                               AS sessions_abandoned,
     toFloat64(JSONExtractFloat(properties, 'cart_value'))           AS cart_value_sum,
     if(JSONHas(properties, 'cart_value'), 1, 0)                    AS cart_value_count
 FROM events
-WHERE event_type IN ('session_start', 'checkout_abandon');
+WHERE t IN ('session_start', 'checkout_abandon');
 
 -- Final view: aggregates the rolling 7-day and 30-day windows
 -- Query this view from FeatureService (one row per store+distinct_id).

@@ -4,9 +4,12 @@ import { interventions } from './interventions.js';
 
 /**
  * Full lifecycle event log for each intervention interaction.
- * Written by the tracker SDK via the enrichment-session consumer when it
- * receives $intervention_shown, $intervention_dismissed, $intervention_clicked,
- * $intervention_accepted, $intervention_ignored, $intervention_suppressed events.
+ * Written by apps/analytics-consumer (not enrichment-session — that service
+ * has no Postgres business-logic write path) when it consumes
+ * $intervention_shown, $intervention_dismissed, $intervention_clicked,
+ * $intervention_accepted, $intervention_ignored, $intervention_suppressed
+ * events from the enriched.events Kafka topic. See
+ * apps/analytics-consumer/src/intervention-events.ts.
  *
  * Complements the boolean flags on the interventions table with a full
  * timestamped sequence for funnel analytics and CTR computation.

@@ -154,14 +154,14 @@ impl EnrichmentConsumer {
                                 Ok(s) => s,
                                 Err(e) => {
                                     tracing::error!(error = %e, "Failed to serialize enriched event");
-                                    self.send_to_dlq(&producer, "serialization_failed", &key, &payload, &e.to_string(), Some(enriched.event_id.as_str())).await;
+                                    self.send_to_dlq(&producer, "serialization_failed", &key, &payload, &e.to_string(), Some(enriched.eid.as_str())).await;
                                     record_progress("serialization_failed");
                                     self.metrics.events_processed("dropped");
                                     continue;
                                 }
                             };
 
-                            match retry_produce(&producer, &self.config.kafka_enriched_topic, &enriched.session_id, serialized.as_bytes()).await {
+                            match retry_produce(&producer, &self.config.kafka_enriched_topic, &enriched.sid, serialized.as_bytes()).await {
                                 Ok(()) => {
                                     // Fast-path: forward trigger events (fire-and-forget)
                                     if let Some(forwarder) = &self.trigger_forwarder {
@@ -173,8 +173,8 @@ impl EnrichmentConsumer {
                                     record_progress("processed");
                                 }
                                 Err(e) => {
-                                    tracing::error!(error = %e, event_id = %enriched.event_id, "Produce failed after retries, sending to DLQ");
-                                    self.send_to_dlq(&producer, "produce_failed", &key, &payload, &e.to_string(), Some(enriched.event_id.as_str())).await;
+                                    tracing::error!(error = %e, event_id = %enriched.eid, "Produce failed after retries, sending to DLQ");
+                                    self.send_to_dlq(&producer, "produce_failed", &key, &payload, &e.to_string(), Some(enriched.eid.as_str())).await;
                                     record_progress("produce_failed");
                                     self.metrics.events_processed("dropped");
                                     // Back off to signal degraded state to readiness probe

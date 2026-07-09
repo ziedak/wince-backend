@@ -3,6 +3,7 @@ import type { ClickHouseClient } from '@org/clickhouse_client';
 import type { RedisClient } from '@org/redis_client';
 import { createLogger } from '@org/logger';
 import type { Logger } from '@org/logger';
+import { healthCheck as dbHealthCheck, type Db } from '@org/db';
 import type { ConsumerState } from './consumer.js';
 import type { AnalyticsMetrics } from './metrics.js';
 
@@ -16,6 +17,7 @@ export class HealthServer {
     private readonly metrics: AnalyticsMetrics,
     private readonly port: number,
     private readonly redis: RedisClient | null,
+    private readonly db: Db,
   ) {
     this.logger = createLogger({ service: 'HealthServer' });
   }
@@ -101,6 +103,10 @@ export class HealthServer {
         checks.push({ name: 'redis', ok: false, error: String(err) });
       }
     }
+
+    // PostgreSQL (intervention lifecycle event writes)
+    const dbHealthy = await dbHealthCheck(this.db);
+    checks.push({ name: 'postgres', ok: dbHealthy });
 
     const allOk = checks.every((c) => c.ok);
     const body = JSON.stringify({ status: allOk ? 'ok' : 'degraded', checks });

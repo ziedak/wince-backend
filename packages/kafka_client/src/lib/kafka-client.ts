@@ -1,5 +1,6 @@
 import {
   Kafka,
+  type Admin,
   type Consumer,
   CompressionTypes,
   type EachBatchPayload,
@@ -51,6 +52,19 @@ export interface ConsumerClient {
 }
 
 export type KafkaEachBatchPayload = EachBatchPayload;
+
+export interface ConsumerGroupLagEntry {
+  topic: string;
+  partition: number;
+  lag: number;
+}
+
+export interface AdminClient {
+  /** Lag (high watermark - last committed offset) per topic-partition for a consumer group. */
+  fetchConsumerGroupLag(groupId: string, topics: string[]): Promise<ConsumerGroupLagEntry[]>;
+  isHealthy(): boolean;
+  shutdown(): Promise<void>;
+}
 
 /**
  * Creates an idempotent KafkaJS producer.
@@ -176,6 +190,69 @@ export function createConsumerClient(options: KafkaConsumerOptions): ConsumerCli
 
     async shutdown(): Promise<void> {
       await consumer.disconnect();
+      connected = false;
+    },
+  };
+}
+
+/**
+ * Creates a KafkaJS admin client wrapper — currently used for consumer group
+ * lag reporting only.
+ */
+export function createAdminClient(options: KafkaProducerOptions): AdminClient {
+  const kafka = new Kafka({
+    brokers: options.brokers,
+    clientId: options.clientId,
+    connectionTimeout: options.connectionTimeout ?? 3000,
+    requestTimeout: options.requestTimeout ?? 30000,
+  });
+
+  const admin: Admin = kafka.admin();
+
+  let connected = false;
+  let connectError: Error | null = null;
+  const connectPromise = admin
+    .connect()
+    .then(() => {
+      connected = true;
+    })
+    .catch((err: unknown) => {
+      connectError = err instanceof Error ? err : new Error(String(err));
+      throw connectError;
+    });
+
+  return {
+    async fetchConsumerGroupLag(
+      groupId: string,
+      topics: string[],
+    ): Promise<ConsumerGroupLagEntry[]> {
+      await connectPromise;
+      const results: ConsumerGroupLagEntry[] = [];
+      const committedByTopic = await admin.fetchOffsets({ groupId, topics });
+
+      for (const { topic, partitions } of committedByTopic) {
+        const highWatermarks = await admin.fetchTopicOffsets(topic);
+        const highByPartition = new Map(
+          highWatermarks.map((p) => [p.partition, Number(p.high)]),
+        );
+
+        for (const p of partitions) {
+          const high = highByPartition.get(p.partition) ?? 0;
+          const committed = Number(p.offset);
+          const lag = committed >= 0 ? Math.max(0, high - committed) : high;
+          results.push({ topic, partition: p.partition, lag });
+        }
+      }
+
+      return results;
+    },
+
+    isHealthy(): boolean {
+      return connected && connectError === null;
+    },
+
+    async shutdown(): Promise<void> {
+      await admin.disconnect();
       connected = false;
     },
   };

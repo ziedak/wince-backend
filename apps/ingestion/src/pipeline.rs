@@ -40,6 +40,8 @@ pub struct TrackingEnvelope {
 pub struct RawEvent {
     pub eid: String,
     pub seq: u64,
+    /// Event name. The SDK's wire key is `n`; `t` is accepted as a legacy alias.
+    #[serde(rename = "n", alias = "t")]
     pub t: String,
     pub ts: i64,
     pub sid: String,
@@ -54,10 +56,19 @@ pub struct RawEvent {
     pub url: Option<String>,
     #[serde(rename = "ref")]
     pub referrer: Option<String>,
+    /// Tab-scoped window ID. Wire key is `wid`; `window_id` accepted as a legacy alias.
+    #[serde(rename = "wid", alias = "window_id")]
     pub window_id: Option<String>,
+    /// Current page view ID. Wire key is `pvid`; `pageview_id` accepted as a legacy alias.
+    #[serde(rename = "pvid", alias = "pageview_id")]
     pub pageview_id: Option<String>,
     pub offset: Option<i64>,
     pub schema_v: Option<u32>,
+    /// Delivery priority hint from the client SDK ('critical' | 'high' | 'normal').
+    /// Ingestion does not act on this — it is validated and forwarded downstream
+    /// untouched so apps/decision-engine can prioritize processing.
+    #[serde(rename = "_priority", default)]
+    pub priority: Option<String>,
     /// Per-event SDK processing flags.
     #[serde(default)]
     pub options: EventOptions,
@@ -115,6 +126,8 @@ pub struct ServerEvent {
     pub ip: String,
     pub cookieless_mode: bool,
     pub process_person_profile: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }
 
 // ─── Event classification (Phase 4) ─────────────────────────────────────────
@@ -126,17 +139,43 @@ enum DataType {
     Checkout,
 }
 
+/// High-value cart actions that the browser SDK's cart plugin routes to its
+/// own higher-priority transport lane (see wince/docs/WEB.md). These are the
+/// commerce-critical `$cart_*` events that belong in the checkout topic/bucket
+/// alongside WooCommerce/backend-style `order_*` / `purchase` events.
+const HIGH_VALUE_CART_ACTIONS: &[&str] = &[
+    "add",
+    "remove",
+    "purchase",
+    "checkout_complete",
+    "checkout_abandon",
+    "coupon_applied",
+    "coupon_failed",
+];
+
+/// Shared classification: does this event type belong in the checkout/commerce
+/// bucket? Used by both Kafka topic routing (`classify`, below) and quota
+/// bucketing (`QuotaBucket::from_event_type` in quota_limiter.rs) so the two
+/// stay in sync instead of drifting independently.
+pub fn is_checkout_event_type(name: &str) -> bool {
+    if name.starts_with("$checkout_")
+        || name.starts_with("order_")
+        || name == "purchase"
+        || name == "checkout_started"
+    {
+        return true;
+    }
+    match name.strip_prefix("$cart_") {
+        Some(action) => HIGH_VALUE_CART_ACTIONS.contains(&action),
+        None => false,
+    }
+}
+
 fn classify(event_name: &str) -> DataType {
     match event_name {
         "$exception" => DataType::Error,
         "$identify" | "$alias" | "$create_alias" => DataType::Identify,
-        name if name.starts_with("$checkout_")
-            || name.starts_with("order_")
-            || name == "purchase"
-            || name == "checkout_started" =>
-        {
-            DataType::Checkout
-        }
+        name if is_checkout_event_type(name) => DataType::Checkout,
         _ => DataType::Analytics,
     }
 }
@@ -186,7 +225,25 @@ fn is_illegal_id(id: &str) -> bool {
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
+/// Contract versions this ingestion build knows how to parse.
+///
+/// Bump the upper bound only after the tracker-js contract change has been
+/// reviewed and any newly-required fields have safe defaults here and in
+/// `packages/rust-shared-types`. Events with `schema_v` outside this range
+/// are dropped (routed to DLQ) rather than silently accepted, so a breaking
+/// SDK/contract change fails loudly instead of corrupting downstream data.
+/// `schema_v: None` (older SDKs that predate the field) is treated as `1`.
+const MIN_SUPPORTED_SCHEMA_V: u32 = 1;
+const MAX_SUPPORTED_SCHEMA_V: u32 = 1;
+
 fn validate(event: &RawEvent) -> Result<(), AppError> {
+    if let Some(v) = event.schema_v {
+        if v < MIN_SUPPORTED_SCHEMA_V || v > MAX_SUPPORTED_SCHEMA_V {
+            return Err(AppError::BadRequest(format!(
+                "unsupported schema_v: {v} (supported range: {MIN_SUPPORTED_SCHEMA_V}-{MAX_SUPPORTED_SCHEMA_V})"
+            )));
+        }
+    }
     if event.eid.is_empty() {
         return Err(AppError::BadRequest("missing required field: eid".into()));
     }
@@ -562,6 +619,7 @@ where
             ip: ip.clone(),
             cookieless_mode,
             process_person_profile,
+            priority: event.priority,
         };
 
         // ── Step 5: Serialize ─────────────────────────────────────────────
@@ -596,6 +654,7 @@ where
                 dlq_reason: Some("too_big".to_string()),
                 cookieless_mode: server_event.cookieless_mode,
                 process_person_profile: server_event.process_person_profile,
+                priority: server_event.priority.clone(),
             };
             let _ = sink
                 .send(
@@ -644,6 +703,7 @@ where
             dlq_reason: None,
             cookieless_mode,
             process_person_profile,
+            priority: server_event.priority.clone(),
         };
         let start = std::time::Instant::now();
         match sink.send(topic, &partition_key, &payload, &sink_headers).await {

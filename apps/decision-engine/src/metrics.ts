@@ -89,6 +89,16 @@ export class DecisionMetrics {
     void this.mc.recordCounter('onnx_circuit_state_total', 1, { state })
   }
 
+  /**
+   * Counts enriched.events Kafka messages processed, labeled by delivery
+   * priority ('critical' | 'high' | 'normal' | 'none' when absent). Lets us
+   * verify the priority-ordered batch processing in DecisionConsumer is
+   * actually favoring higher-priority events under load.
+   */
+  priorityProcessed(priority: string): void {
+    void this.mc.recordCounter('decision_priority_processed_total', 1, { priority })
+  }
+
   async getMetrics(): Promise<string> {
     return this.mc.getMetrics()
   }

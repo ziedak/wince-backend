@@ -80,7 +80,7 @@ export class RiskScorerService {
       await this.registerSession(userId, event.sid, event.cart_value ?? 0)
 
       // ── 2. Compute triggering session score (rules + ONNX in parallel) ──
-      const [ruleResult, inferenceResult] = await Promise.all([
+      const [ruleResult, rawInferenceResult] = await Promise.all([
         Promise.resolve(this.rules.evaluate(event, features, policy)),
         this.inference.predict(event.features, features),
       ])
@@ -89,6 +89,14 @@ export class RiskScorerService {
       if (!ruleResult.shouldIntervene) {
         return null
       }
+
+      // InferenceService.predict() is documented to never resolve null/undefined
+      // (it returns a stub confidence 0.5 when the model isn't loaded). Guard
+      // anyway: treating a contract violation as "zero confidence" lets the
+      // rules engine take over exactly as it does for the documented stub case,
+      // instead of the whole request incorrectly falling into the catastrophic
+      // fallback ladder below (which is reserved for Redis/ClickHouse outages).
+      const inferenceResult = rawInferenceResult ?? { confidence: 0 }
 
       // ── 3. Determine routing: ONNX overrides rules when confidence > 0.6 ─
       const onnxDriven =

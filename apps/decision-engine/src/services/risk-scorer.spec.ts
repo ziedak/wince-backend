@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RiskScorerService, RISK_THRESHOLD } from './risk-scorer.service.js';
 import type { EnrichedEvent } from '@org/types';
-import type { CustomerFeatures } from '../features/features.service.js';
-import type { Policy } from '../policy/policy.service.js';
+import type { CustomerFeatures } from './features.service.js';
+import type { Policy } from './policy.service.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

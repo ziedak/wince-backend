@@ -174,6 +174,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@org/clickhouse_client": "*",
+        "@org/db": "*",
         "@org/kafka_client": "*",
       },
     },
@@ -192,17 +193,6 @@
         "@org/types": "*",
         "cockatiel": "*",
         "onnxruntime-node": "*",
-      },
-    },
-    "apps/enrichment-session": {
-      "name": "@org/enrichment-session",
-      "version": "0.0.1",
-      "dependencies": {
-        "@org/db": "workspace:*",
-        "@org/kafka_client": "workspace:*",
-        "@org/logger": "workspace:*",
-        "@org/monitoring": "workspace:*",
-        "@org/redis_client": "workspace:*",
       },
     },
     "apps/frontend": {
@@ -1138,8 +1128,6 @@
     "@org/db": ["@org/db@workspace:packages/db"],
 
     "@org/decision-engine": ["@org/decision-engine@workspace:apps/decision-engine"],
-
-    "@org/enrichment-session": ["@org/enrichment-session@workspace:apps/enrichment-session"],
 
     "@org/frontend": ["@org/frontend@workspace:apps/frontend"],
 

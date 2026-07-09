@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { interventions, eq, and, gte, lte, sql as dsql } from '@org/db';
 import { authMiddleware } from '../middleware/auth';
 import { requireStoreAccess } from '../middleware/store-scope';
+import type { DbClient } from '../types';
 import type { ClickHouseClient } from '@org/clickhouse_client';
 
 const rangeSchema = z.object({
@@ -11,7 +13,7 @@ const rangeSchema = z.object({
   to: z.string().datetime().optional(),
 });
 
-export function createAnalyticsRouter(ch: ClickHouseClient) {
+export function createAnalyticsRouter(db: DbClient, ch: ClickHouseClient) {
   const app = new Hono();
 
   app.get(
@@ -21,13 +23,13 @@ export function createAnalyticsRouter(ch: ClickHouseClient) {
     requireStoreAccess((c) => c.req.valid('query').store_id),
     async (c) => {
       const { store_id, from, to } = c.req.valid('query');
-      const result = await ch.query({
-        query: `
+      const rows = await ch.execute<Array<Record<string, unknown>>>(
+        `
           SELECT
             toDate(timestamp) AS date,
-            countIf(event_type = 'cart_abandoned') AS abandoned,
-            countIf(event_type = 'purchase') AS recovered,
-            round(countIf(event_type = 'purchase') / countIf(event_type = 'cart_abandoned') * 100, 2) AS recovery_rate
+            countIf(t = 'checkout_abandon') AS abandoned,
+            countIf(t = 'purchase') AS recovered,
+            round(countIf(t = 'purchase') / countIf(t = 'checkout_abandon') * 100, 2) AS recovery_rate
           FROM events
           WHERE store_id = {storeId: Int32}
             ${from ? 'AND timestamp >= {from: DateTime}' : ''}
@@ -35,13 +37,16 @@ export function createAnalyticsRouter(ch: ClickHouseClient) {
           GROUP BY date
           ORDER BY date ASC
         `,
-        query_params: { storeId: store_id, ...(from && { from }), ...(to && { to }) },
-        format: 'JSONEachRow',
-      });
-      return c.json(await result.json());
+        { storeId: store_id, ...(from && { from }), ...(to && { to }) },
+      );
+      return c.json(rows);
     },
   );
 
+  // NOTE: revenue/conversion attribution lives on the Postgres `interventions`
+  // row (type/converted/revenue_attributed) written by decision-engine — the
+  // ClickHouse intervention_events table has no such columns (it's a lifecycle
+  // event log: shown/clicked/accepted/dismissed, not a revenue ledger).
   app.get(
     '/admin/analytics/revenue',
     authMiddleware,
@@ -49,24 +54,23 @@ export function createAnalyticsRouter(ch: ClickHouseClient) {
     requireStoreAccess((c) => c.req.valid('query').store_id),
     async (c) => {
       const { store_id, from, to } = c.req.valid('query');
-      const result = await ch.query({
-        query: `
-          SELECT
-            intervention_type,
-            count() AS total_interventions,
-            countIf(converted = 1) AS conversions,
-            sum(revenue_attributed) AS revenue
-          FROM intervention_events
-          WHERE store_id = {storeId: Int32}
-            ${from ? 'AND timestamp >= {from: DateTime}' : ''}
-            ${to ? 'AND timestamp <= {to: DateTime}' : ''}
-          GROUP BY intervention_type
-          ORDER BY revenue DESC
-        `,
-        query_params: { storeId: store_id, ...(from && { from }), ...(to && { to }) },
-        format: 'JSONEachRow',
-      });
-      return c.json(await result.json());
+      const conditions = [eq(interventions.storeId, store_id)];
+      if (from) conditions.push(gte(interventions.sentAt, new Date(from)));
+      if (to) conditions.push(lte(interventions.sentAt, new Date(to)));
+
+      const rows = await db
+        .select({
+          interventionType: interventions.type,
+          totalInterventions: dsql<number>`count(*)`,
+          conversions: dsql<number>`count(*) filter (where ${interventions.converted})`,
+          revenue: dsql<number>`coalesce(sum(${interventions.revenueAttributed}), 0)`,
+        })
+        .from(interventions)
+        .where(and(...conditions))
+        .groupBy(interventions.type)
+        .orderBy(dsql`revenue desc`);
+
+      return c.json(rows);
     },
   );
 
@@ -77,24 +81,23 @@ export function createAnalyticsRouter(ch: ClickHouseClient) {
     requireStoreAccess((c) => c.req.valid('query').store_id),
     async (c) => {
       const { store_id, from, to } = c.req.valid('query');
-      const result = await ch.query({
-        query: `
+      const rows = await ch.execute<Array<Record<string, unknown>>>(
+        `
           SELECT
             toDayOfWeek(timestamp) AS day_of_week,
             toHour(timestamp) AS hour,
             count() AS abandonment_count
           FROM events
           WHERE store_id = {storeId: Int32}
-            AND event_type = 'cart_abandoned'
+            AND t = 'checkout_abandon'
             ${from ? 'AND timestamp >= {from: DateTime}' : ''}
             ${to ? 'AND timestamp <= {to: DateTime}' : ''}
           GROUP BY day_of_week, hour
           ORDER BY day_of_week, hour
         `,
-        query_params: { storeId: store_id, ...(from && { from }), ...(to && { to }) },
-        format: 'JSONEachRow',
-      });
-      return c.json(await result.json());
+        { storeId: store_id, ...(from && { from }), ...(to && { to }) },
+      );
+      return c.json(rows);
     },
   );
 

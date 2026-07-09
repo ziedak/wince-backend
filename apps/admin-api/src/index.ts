@@ -61,7 +61,7 @@ app.route('/', createAuthRouter(db, kong, audit, config));
 app.route('/', createStoresRouter(db, kong, audit));
 app.route('/', createPoliciesRouter(db, audit));
 app.route('/', createExperimentsRouter(db, ch, audit));
-app.route('/', createAnalyticsRouter(ch));
+app.route('/', createAnalyticsRouter(db, ch));
 app.route('/', createRiskRouter(redis, de));
 app.route('/', createInterventionRouter(de, audit, recommendations));
 app.route('/', createDiscountRouter(db, redis));

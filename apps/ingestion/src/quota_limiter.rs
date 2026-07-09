@@ -28,6 +28,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::errors::AppError;
+use crate::pipeline::is_checkout_event_type;
 
 // ─── Bucket classification ────────────────────────────────────────────────────
 
@@ -44,13 +45,7 @@ impl QuotaBucket {
     pub fn from_event_type(t: &str) -> Self {
         match t {
             "$exception" => Self::Exceptions,
-            name if name.starts_with("$checkout_")
-                || name.starts_with("order_")
-                || name == "purchase"
-                || name == "checkout_started" =>
-            {
-                Self::Checkout
-            }
+            name if is_checkout_event_type(name) => Self::Checkout,
             _ => Self::Events,
         }
     }
@@ -192,5 +187,30 @@ mod tests {
         assert_eq!(QuotaBucket::from_event_type("$page_view"), QuotaBucket::Events);
         assert_eq!(QuotaBucket::from_event_type("$identify"), QuotaBucket::Events);
         assert_eq!(QuotaBucket::from_event_type("custom_event"), QuotaBucket::Events);
+    }
+
+    #[test]
+    fn bucket_classification_high_value_cart_actions() {
+        assert_eq!(QuotaBucket::from_event_type("$cart_add"), QuotaBucket::Checkout);
+        assert_eq!(QuotaBucket::from_event_type("$cart_remove"), QuotaBucket::Checkout);
+        assert_eq!(QuotaBucket::from_event_type("$cart_purchase"), QuotaBucket::Checkout);
+        assert_eq!(
+            QuotaBucket::from_event_type("$cart_checkout_complete"),
+            QuotaBucket::Checkout
+        );
+        assert_eq!(
+            QuotaBucket::from_event_type("$cart_checkout_abandon"),
+            QuotaBucket::Checkout
+        );
+        assert_eq!(
+            QuotaBucket::from_event_type("$cart_coupon_applied"),
+            QuotaBucket::Checkout
+        );
+        assert_eq!(
+            QuotaBucket::from_event_type("$cart_coupon_failed"),
+            QuotaBucket::Checkout
+        );
+        // Low-value cart events fall back to the default events bucket.
+        assert_eq!(QuotaBucket::from_event_type("$cart_viewed"), QuotaBucket::Events);
     }
 }

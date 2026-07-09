@@ -1,4 +1,5 @@
 import type { EnrichedEvent, InterventionType, InterventionChannel } from '@org/types';
+import { canonicalEventType } from '@org/types';
 import { Policy } from './policy.service';
 import { CustomerFeatures } from './features.service';
 
@@ -133,7 +134,7 @@ export class RuleEngine {
     if ((event.rage_click_count ?? 0) > 2) {
       return { shouldIntervene: true, channel: 'in_shop', type: 'countdown', value: discountValue, confidence: 0.70 };
     }
-    if (event.t === 'exit_intent') {
+    if (canonicalEventType(event.t) === 'exit_intent') {
       return { shouldIntervene: true, channel: 'in_shop', type: 'popup', value: discountValue, confidence: 0.60 };
     }
     return { shouldIntervene: false };

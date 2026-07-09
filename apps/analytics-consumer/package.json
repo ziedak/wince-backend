@@ -104,6 +104,7 @@
   },
   "dependencies": {
     "@org/clickhouse_client": "*",
-    "@org/kafka_client": "*"
+    "@org/kafka_client": "*", 
+    "@org/db": "*"
   }
 }

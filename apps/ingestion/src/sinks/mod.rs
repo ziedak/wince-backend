@@ -50,6 +50,11 @@ pub struct SinkHeaders {
     /// Forwarded from [`EventOptions::process_person_profile`]: explicit SDK
     /// request to create/update a person profile for this event.
     pub process_person_profile: bool,
+    /// Delivery priority hint forwarded from the client SDK's `_priority`
+    /// field (`critical` | `high` | `normal`), when present. Ingestion does
+    /// not act on this — downstream consumers (e.g. decision-engine) use it
+    /// to prioritize processing.
+    pub priority: Option<String>,
 }
 
 impl SinkHeaders {
@@ -75,6 +80,7 @@ impl SinkHeaders {
             dlq_reason: Some(dlq_reason.to_string()),
             cookieless_mode: false,
             process_person_profile: false,
+            priority: None,
         }
     }
 }

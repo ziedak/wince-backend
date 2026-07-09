@@ -3,6 +3,7 @@ import type { ConsumerClient, ProducerClient } from '@org/kafka_client';
 import { createLogger } from '@org/logger';
 import type { Logger } from '@org/logger';
 import type { EnrichedEvent } from '@org/types';
+import { canonicalEventType } from '@org/types';
 import type { Config } from '../config.js';
 import { DecisionMetrics } from '../metrics.js';
 import { DecisionOrchestrator } from '../services/intervention.service.js';
@@ -10,10 +11,21 @@ import { LockService } from '../services/lock.service.js';
 import { SchedulerService } from '../services/scheduler.service.js';
 
 
-/** Event types that may trigger an intervention. All other types are ignored. */
-const TRIGGER_EVENTS = new Set(['checkout_abandon', 'exit_intent', 'idle_timeout']);
+/** Event types that may trigger an intervention. All other types are ignored.
+ * Compared against the canonicalized (prefix-stripped) event type — see
+ * `canonicalEventType` — since the browser SDK emits `$exit_intent`,
+ * `$cart_checkout_abandon`, `$user_idle`, not these bare names. */
+const TRIGGER_EVENTS = new Set(['checkout_abandon', 'exit_intent', 'user_idle']);
 /** Purchase events clear post-conversion state to prevent follow-up interventions. */
 const PURCHASE_EVENT = 'purchase';
+
+/** Lower rank = processed first. Unknown/missing priority sorts last (same as 'normal' peers, via stable sort). */
+const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, normal: 2 };
+
+function priorityRankOf(priority: string | undefined): number {
+  if (priority === undefined) return 3;
+  return PRIORITY_RANK[priority] ?? 3;
+}
 
 const RETRY_DELAYS = [100, 200, 400];
 
@@ -129,22 +141,47 @@ export class DecisionConsumer {
         });
 
         try {
-          for (const message of batch.messages) {
+          // Parse once up front so messages can be reordered by priority
+          // without re-parsing. Invalid JSON keeps event = null and is
+          // handled (sent to DLQ) in the processing loop below.
+          const parsed = batch.messages.map((message) => {
+            const rawStr = message.value?.toString() ?? null;
+            let event: EnrichedEvent | null = null;
+            if (rawStr) {
+              try {
+                event = JSON.parse(rawStr) as EnrichedEvent;
+              } catch {
+                event = null;
+              }
+            }
+            return { message, rawStr, event };
+          });
+
+          // Stable sort: critical -> high -> normal -> unknown/missing.
+          // Only affects processing order (so time-sensitive events are
+          // decided first); offsets are still resolved in strict partition
+          // order below, so at-least-once/no-skip semantics are preserved.
+          const ordered = [...parsed].sort(
+            (a, b) => priorityRankOf(a.event?.priority) - priorityRankOf(b.event?.priority),
+          );
+
+          const done = new Set<string>();
+          const markDone = async (offset: string, priority: string | undefined): Promise<void> => {
+            done.add(offset);
+            this.metrics.priorityProcessed(priority ?? 'none');
+            await heartbeat();
+          };
+
+          for (const { message, rawStr, event } of ordered) {
             if (!isRunning() || isStale() || this.isShuttingDown) break;
 
-            const rawStr = message.value?.toString() ?? null;
             const key = message.key?.toString() ?? 'unknown';
 
             // Parse — invalid JSON goes straight to DLQ
-            let event: EnrichedEvent | null = null;
-            try {
-              if (!rawStr) throw new Error('empty message');
-              event = JSON.parse(rawStr) as EnrichedEvent;
-            } catch {
+            if (event === null) {
               this.logger.warn({ key }, 'Invalid JSON in message — sending to DLQ');
               await sendToDlq(rawStr, 'invalid_json', key);
-              resolveOffset(message.offset);
-              await heartbeat();
+              await markDone(message.offset, undefined);
               continue;
             }
 
@@ -154,26 +191,23 @@ export class DecisionConsumer {
             if (event.customer_id === null || event.customer_id === undefined) {
               this.logger.warn({ key, eid: event.eid }, 'Missing customer_id — routing to DLQ');
               await sendToDlq(rawStr, 'missing_user_id', key);
-              resolveOffset(message.offset);
-              await heartbeat();
+              await markDone(message.offset, event.priority);
               continue;
             }
 
             // Purchase cleanup (v2 spec §4.4): clear all post-conversion state so a repeat
             // buyer's next session starts fresh without triggering cooldown blocks.
-            if (event.t === PURCHASE_EVENT) {
+            if (canonicalEventType(event.t) === PURCHASE_EVENT) {
               await this.lock.clearUserSent(event.customer_id);
               await this.scheduler.clearUserSessions(event.customer_id, event.store_id);
               this.logger.debug({ customerId: event.customer_id, storeId: event.store_id }, 'Purchase: cleared user state');
-              resolveOffset(message.offset);
-              await heartbeat();
+              await markDone(message.offset, event.priority);
               continue;
             }
 
             // Filter — only trigger events reach the orchestrator
-            if (!TRIGGER_EVENTS.has(event.t)) {
-              resolveOffset(message.offset);
-              await heartbeat();
+            if (!TRIGGER_EVENTS.has(canonicalEventType(event.t))) {
+              await markDone(message.offset, event.priority);
               continue;
             }
 
@@ -182,7 +216,7 @@ export class DecisionConsumer {
             // Decide with retry (3 attempts, exponential backoff)
             try {
               await withRetry(
-                () => this.orchestrator.decide(event!),
+                () => this.orchestrator.decide(event),
                 RETRY_DELAYS,
                 this.logger,
                 'decide',
@@ -196,8 +230,7 @@ export class DecisionConsumer {
               this.state.backingOff = true;
               await sleep(5_000);
               this.state.backingOff = false;
-              resolveOffset(message.offset);
-              await heartbeat();
+              await markDone(message.offset, event.priority);
               continue;
             }
 
@@ -209,8 +242,17 @@ export class DecisionConsumer {
             );
             this.logger.debug({ eid: event.eid, latencyMs: Date.now() - t0 }, 'Event decided');
 
+            await markDone(message.offset, event.priority);
+          }
+
+          // Resolve offsets in strict partition order, stopping at the first
+          // message that wasn't processed (e.g. the loop above broke early
+          // due to isStale()/shutdown). This guarantees we never commit past
+          // an unprocessed message, even though processing itself happened
+          // in priority order above.
+          for (const message of batch.messages) {
+            if (!done.has(message.offset)) break;
             resolveOffset(message.offset);
-            await heartbeat();
           }
 
           await commitOffsetsIfNecessary();

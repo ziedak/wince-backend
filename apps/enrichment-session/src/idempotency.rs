@@ -5,7 +5,7 @@ use std::time::Instant;
 use thiserror::Error;
 use redis::Value as RedisValue;
 use crate::metrics::EnrichmentMetrics;
-use rust_shared_types::{FeatureVector, RawEvent};
+use rust_shared_types::{canonical_event_type, FeatureVector, RawEvent};
 use rust_redis_client::RedisClient;
 
 pub const FEATURE_SCHEMA_VERSION: &str = "v1";
@@ -38,7 +38,7 @@ if etype == 'rage_click' then
     redis.call('ZADD',             KEYS[4], now_ms, ARGV[1])
     redis.call('EXPIRE',           KEYS[4], win_ttl)
     redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', cutoff_ms)
-elseif etype == 'add_to_cart' then
+elseif etype == 'add' then
     redis.call('ZADD',             KEYS[5], now_ms, ARGV[1])
     redis.call('EXPIRE',           KEYS[5], win_ttl)
     redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', cutoff_ms)
@@ -69,7 +69,7 @@ if last_add > 0 then sla = (now_ms - last_add) / 1000.0 end
 
 -- Update session hash timestamps
 redis.call('HSET', KEYS[3], 'last_event_ts', now_ms)
-if etype == 'add_to_cart' then
+if etype == 'add' then
     redis.call('HSET', KEYS[3], 'last_add_ts', now_ms)
     last_add = now_ms
     if cart_v > 100 then
@@ -115,12 +115,12 @@ local time_on_site = math.floor((now_ms - first_ts) / 1000)
 -- Cart value delta over 2 minutes (KEYS[8] = session:w:{sid}:cv).
 -- Members are encoded as "{signed_value}|{eid}" so the value is extractable
 -- with a simple prefix match without a second Redis call.
-if etype == 'add_to_cart' then
+if etype == 'add' then
     local cv_member = tostring(cart_v) .. '|' .. ARGV[1]
     redis.call('ZADD',             KEYS[8], now_ms, cv_member)
     redis.call('EXPIRE',           KEYS[8], 120)
     redis.call('ZREMRANGEBYSCORE', KEYS[8], '-inf', now_ms - 120000)
-elseif etype == 'remove_from_cart' then
+elseif etype == 'remove' then
     local cv_member = tostring(-cart_v) .. '|' .. ARGV[1]
     redis.call('ZADD',             KEYS[8], now_ms, cv_member)
     redis.call('EXPIRE',           KEYS[8], 120)
@@ -227,17 +227,18 @@ impl WindowService {
     pub async fn update(&self, raw: &RawEvent) -> Result<WindowResult, WindowError> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let now_s = now_ms / 1000;
-        let sid = &raw.session_id;
-        let eid = &raw.event_id;
+        let sid = &raw.sid;
+        let eid = &raw.eid;
         let scroll_velocity = raw
-            .properties
+            .props
             .as_ref()
             .and_then(|p| p.get("scroll_velocity"))
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        let cart_value = raw.cart_value.unwrap_or(0.0);
-        let checkout_step: i64 = if raw.event_type == "checkout_step" {
-            raw.properties
+        let cart_value = raw.cart_value().unwrap_or(0.0);
+        let etype = canonical_event_type(&raw.t);
+        let checkout_step: i64 = if etype == "checkout_step" {
+            raw.props
                 .as_ref()
                 .and_then(|p| p.get("step"))
                 .and_then(|v| v.as_i64())
@@ -263,7 +264,7 @@ impl WindowService {
         let args: Vec<String> = vec![
             eid.clone(),                          // ARGV[1]
             now_ms.to_string(),                   // ARGV[2]
-            raw.event_type.clone(),               // ARGV[3]
+            etype.to_string(),                    // ARGV[3]
             now_s.to_string(),                    // ARGV[4]
             self.window_ttl.to_string(),          // ARGV[5]
             self.session_ttl.to_string(),         // ARGV[6]
@@ -289,7 +290,7 @@ impl WindowService {
             RedisValue::Bulk(v) => v,
             _ => return Err(WindowError::Redis("unexpected Lua response shape".into())),
         };
-        Ok(parse_result(values, &raw.event_type, now_ms))
+        Ok(parse_result(values, etype, now_ms))
     }
 }
 
@@ -327,7 +328,7 @@ fn parse_result(values: Vec<RedisValue>, event_type: &str, now_ms: i64) -> Windo
     let pattern_exit_after_checkout = event_type == "exit_intent"
         && last_checkout_ts_ms > 0
         && (now_ms - last_checkout_ts_ms) <= 30_000;
-    let idle_after_high_cart = event_type == "idle_timeout" && last_hca_ts_ms > 0;
+    let idle_after_high_cart = event_type == "user_idle" && last_hca_ts_ms > 0;
 
     WindowResult::Features(FeatureVector {
         rage_clicks_30s,

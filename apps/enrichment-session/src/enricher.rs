@@ -34,14 +34,14 @@ impl Enricher {
             Err(e) => {
                 // On Redis outage, drop the event to prevent double-processing on retry.
                 // This is deliberate at-most-once behaviour during degradation.
-                tracing::error!(error = %e, event_id = %raw.event_id, "window update failed — event dropped (Redis unavailable)");
+                tracing::error!(error = %e, event_id = %raw.eid, "window update failed — event dropped (Redis unavailable)");
                 self.metrics.events_processed("redis_degraded");
                 return EnrichResult::Duplicate;
             }
         };
 
         // ── 2. Customer lookup (non-fatal) ────────────────────────────────────────
-        let customer_data = match self.customer.get_or_create(raw.store_id, &raw.distinct_id).await {
+        let customer_data = match self.customer.get_or_create(raw.store_id, &raw.anon).await {
             Ok(data) => data,
             Err(_) => None,
         };
@@ -52,15 +52,16 @@ impl Enricher {
         let is_frustrated    = fv.pattern_rage_after_add || fv.rage_clicks_30s >= 3;
 
         let enriched = EnrichedEvent {
-            event_id:       raw.event_id.clone(),
-            event_type:     raw.event_type.clone(),
-            session_id:     raw.session_id.clone(),
-            distinct_id:    raw.distinct_id.clone(),
+            eid:            raw.eid.clone(),
+            t:              raw.t.clone(),
+            sid:            raw.sid.clone(),
+            anon:           raw.anon.clone(),
+            uid:            raw.uid.clone(),
             store_id:       raw.store_id,
-            timestamp:      raw.timestamp,
-            cart_value:     raw.cart_value,
-            customer_email: raw.customer_email,
-            properties:     raw.properties,
+            ts:             raw.ts,
+            cart_value:     raw.cart_value().unwrap_or(0.0),
+            email:          customer_data.as_ref().and_then(|c| c.email.clone()).or_else(|| raw.customer_email()),
+            props:          raw.props.clone(),
 
             customer_id:    customer_data.as_ref().map(|c| c.id),
             lifetime_value: customer_data.as_ref().map(|c| c.lifetime_value).unwrap_or(0.0),
@@ -70,6 +71,8 @@ impl Enricher {
             is_frustrated,
             session_available: true,
             server_timestamp: chrono::Utc::now().to_rfc3339(),
+            priority: raw.priority.clone(),
+            schema_v: raw.schema_v,
             features: Some(fv),
         };
 
@@ -79,15 +82,15 @@ impl Enricher {
         let ctx = SessionContext {
             store_id:      raw.store_id,
             customer_id:   customer_data.as_ref().map(|c| c.id),
-            distinct_id:   raw.distinct_id.clone(),
-            anon:          Some(raw.distinct_id),
-            uid:           None,
+            distinct_id:   raw.anon.clone(),
+            anon:          Some(raw.anon.clone()),
+            uid:           raw.uid.clone(),
             email:         customer_data.as_ref().and_then(|c| c.email.clone()),
             email_consent: customer_data.as_ref().map(|c| c.email_consent).unwrap_or(false),
             sms_consent:   customer_data.as_ref().map(|c| c.sms_consent).unwrap_or(false),
         };
         let session    = self.session.clone();
-        let session_id = raw.session_id;
+        let session_id = raw.sid;
         tokio::spawn(async move {
             if let Err(e) = session.set_context(&session_id, ctx).await {
                 tracing::warn!(error = %e, session_id = session_id, "set_context failed (non-fatal)");

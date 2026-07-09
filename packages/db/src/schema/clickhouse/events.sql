@@ -8,10 +8,10 @@
 CREATE TABLE events_local ON CLUSTER default_cluster
 (
     timestamp          DateTime64(3) CODEC(Delta, ZSTD),
-    event_id           String        CODEC(ZSTD),
-    event_type         LowCardinality(String),
-    session_id         String,
-    distinct_id        String,
+    eid                String        CODEC(ZSTD),
+    t                  LowCardinality(String),
+    sid                String,
+    anon               String,
     store_id           UInt32,
     customer_id        Nullable(UInt32),
     cart_value         Float64,
@@ -25,7 +25,7 @@ CREATE TABLE events_local ON CLUSTER default_cluster
     server_timestamp   DateTime64(3) DEFAULT now64()
 ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/events_local', '{replica}')
 PARTITION BY toYYYYMM(timestamp)
-ORDER BY (store_id, event_type, timestamp)
+ORDER BY (store_id, t, timestamp)
 TTL timestamp + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
@@ -43,9 +43,9 @@ ORDER BY (store_id, date)
 AS SELECT
     toDate(timestamp)                                              AS date,
     store_id,
-    countIf(event_type = 'checkout_abandon')                      AS abandonments,
-    countIf(event_type = 'purchase')                              AS purchases,
-    sumIf(cart_value, event_type = 'purchase')                    AS recovered_revenue
+    countIf(t = 'checkout_abandon')                                AS abandonments,
+    countIf(t = 'purchase')                                        AS purchases,
+    sumIf(cart_value, t = 'purchase')                              AS recovered_revenue
 FROM events_local
 GROUP BY date, store_id;
 

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { RuleEngine } from './rules.service.js';
 import type { EnrichedEvent } from '@org/types';
-import type { CustomerFeatures } from '../features/features.service.js';
-import type { Policy } from '../policy/policy.service.js';
+import type { CustomerFeatures } from './features.service.js';
+import type { Policy } from './policy.service.js';
 
 function makeEvent(overrides: Partial<EnrichedEvent> = {}): EnrichedEvent {
   return {

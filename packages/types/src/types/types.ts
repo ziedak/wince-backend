@@ -2,6 +2,29 @@
 
 export type EventSource = 'browser' | 'backend';
 
+/**
+ * Strips the browser SDK's transport prefix from an event `t` name, returning
+ * the canonical action used for classification/matching throughout
+ * decision-engine (and mirrored in Rust by `rust_shared_types::canonical_event_type`
+ * for enrichment-session).
+ *
+ * The tracker-js SDK emits names like `$exit_intent`, `$user_idle`,
+ * `$rage_click`, and `$cart_{action}` (e.g. `$cart_add`, `$cart_checkout_abandon`)
+ * — see wince/packages/web/src/plugins/*.ts for the authoritative list.
+ * Backend/webhook-originated events (e.g. `purchase`, `order_created`) are
+ * already bare and pass through unchanged.
+ *
+ * MUST be used instead of comparing `t` directly — every prior direct
+ * comparison against bare strings (`'exit_intent'`, `'checkout_abandon'`,
+ * `'idle_timeout'`, ...) silently never matched in production because the
+ * real values carry the `$`/`$cart_` prefix.
+ */
+export function canonicalEventType(t: string): string {
+  if (t.startsWith('$cart_')) return t.slice('$cart_'.length);
+  if (t.startsWith('$')) return t.slice(1);
+  return t;
+}
+
 // ─── Browser SDK Event Schema ───────────────────────────────────────────────
 // Canonical reference: docs/domains/tracking-model.md
 
@@ -38,6 +61,10 @@ export interface TrackEvent {
   offset?: number;
   /** Schema version — fixed at 1 */
   schema_v?: number;
+  /** Delivery priority hint ('critical' | 'high' | 'normal'). Forwarded
+   * unchanged through ingestion/enrichment; used by decision-engine to
+   * prioritize processing order within a Kafka batch. */
+  priority?: 'critical' | 'high' | 'normal';
 }
 
 /** Transport envelope sent by the browser SDK */

@@ -350,6 +350,41 @@ services:
       - "3005:3005"
     restart: unless-stopped
 
+  analytics-consumer:
+    build:
+      context: .
+      dockerfile: apps/analytics-consumer/Dockerfile
+    container_name: analytics-consumer
+    depends_on:
+      kafka:
+        condition: service_started
+      clickhouse:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      init-kafka:
+        condition: service_completed_successfully
+      clickhouse-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3009
+      KAFKA_HOSTS: kafka:29092
+      KAFKA_TOPIC: enriched.events
+      KAFKA_DLQ_TOPIC: dead.letters
+      KAFKA_GROUP_ID: analytics-consumer-group
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_TABLE: events
+      CLICKHOUSE_INTERVENTION_EVENTS_TABLE: intervention_events
+      POSTGRES_URL: postgresql://admin:password@pgbouncer:6432/app_db
+      REDIS_URL: redis://redis:6379
+      ENABLE_DEDUP: "true"
+      LOG_LEVEL: info
+    ports:
+      - "3009:3009"
+    restart: unless-stopped
+
   notification-service:
     build:
       context: .

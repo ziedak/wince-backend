@@ -2,18 +2,21 @@
  * Shape of an enriched event as serialised by apps/enrichment-session and
  * published to the enriched-events Kafka topic.
  *
- * Field names intentionally mirror EnrichedEvent from
- * apps/enrichment-session/src/types.ts — keep in sync.
+ * Field names are canonical — mirror EnrichedEvent from @org/types (also
+ * used by apps/decision-engine's Kafka consumer) — keep in sync.
  */
 export interface KafkaEnrichedEvent {
-  event_id: string;
-  event_type: string;
-  session_id: string;
-  distinct_id: string;
+  eid: string;
+  t: string;
+  sid: string;
+  anon: string;
+  uid?: string;
   store_id: number;
-  timestamp: string;
+  ts: number;
   cart_value?: number;
-  properties?: Record<string, unknown>;
+  props?: Record<string, unknown>;
+  /** Tracker-js contract version this event was produced under (informational only). */
+  schema_v?: number;
   // Enriched fields added by enrichment-session
   customer_id: number | null;
   lifetime_value: number;
@@ -32,10 +35,10 @@ export interface KafkaEnrichedEvent {
  * Schema mirrors packages/db/src/schema/clickhouse/events.sql exactly.
  */
 export interface ClickHouseRow {
-  event_id: string;
-  event_type: string;
-  session_id: string;
-  distinct_id: string;
+  eid: string;
+  t: string;
+  sid: string;
+  anon: string;
   store_id: number;
   timestamp: string;
   server_timestamp: string;
@@ -57,10 +60,10 @@ export interface ClickHouseRow {
 export function parseEnrichedEvent(raw: unknown): KafkaEnrichedEvent | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const e = raw as Record<string, unknown>;
-  if (typeof e['event_id'] !== 'string' || e['event_id'].length === 0) return null;
-  if (typeof e['event_type'] !== 'string') return null;
-  if (typeof e['session_id'] !== 'string') return null;
-  if (typeof e['distinct_id'] !== 'string') return null;
+  if (typeof e['eid'] !== 'string' || e['eid'].length === 0) return null;
+  if (typeof e['t'] !== 'string') return null;
+  if (typeof e['sid'] !== 'string') return null;
+  if (typeof e['anon'] !== 'string') return null;
   return e as unknown as KafkaEnrichedEvent;
 }
 
@@ -69,12 +72,12 @@ export function parseEnrichedEvent(raw: unknown): KafkaEnrichedEvent | null {
  */
 export function toClickHouseRow(event: KafkaEnrichedEvent): ClickHouseRow {
   return {
-    event_id: event.event_id,
-    event_type: event.event_type,
-    session_id: event.session_id,
-    distinct_id: event.distinct_id,
+    eid: event.eid,
+    t: event.t,
+    sid: event.sid,
+    anon: event.anon,
     store_id: event.store_id,
-    timestamp: event.timestamp,
+    timestamp: new Date(event.ts).toISOString(),
     server_timestamp: event.server_timestamp,
     cart_value: event.cart_value ?? 0,
     customer_id: event.customer_id,
@@ -84,6 +87,6 @@ export function toClickHouseRow(event: KafkaEnrichedEvent): ClickHouseRow {
     rage_click_count: event.rage_click_count,
     is_frustrated: event.is_frustrated ? 1 : 0,
     session_available: event.session_available ? 1 : 0,
-    properties: JSON.stringify(event.properties ?? {}),
+    properties: JSON.stringify(event.props ?? {}),
   };
 }
